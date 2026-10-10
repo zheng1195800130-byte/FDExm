@@ -5,8 +5,14 @@ const {identity}=require('../src/core/material-tags.cjs');
 const hash=value=>createHash('sha256').update(typeof value==='string'||Buffer.isBuffer(value)?value:JSON.stringify(value)).digest('hex');
 const normalized=value=>path.resolve(value).replace(/\\/g,'/').toLowerCase().replace(/\/$/,'');
 
-// Runtime/browser caches are disposable; management files and encrypted keys
-// must all survive migration. Never follow links into unrelated directories.
+// Electron safeStorage on Windows also depends on Chromium's Local State.
+// Keep this encryption context while excluding disposable browser caches.
+const encryptionStates=['runtime/Local State','runtime/browser/Local State'];
+function included(relative){
+  const flat=relative.split(path.sep).join('/');
+  return flat.split('/')[0]!=='runtime'||encryptionStates.some(file=>file===flat||file.startsWith(flat+'/'));
+}
+// Never follow links into unrelated directories.
 function manifest(directory){
   const result={};
   function visit(current){
@@ -14,14 +20,14 @@ function manifest(directory){
     if(stat.isSymbolicLink()||normalized(fs.realpathSync(current))!==normalized(current))throw new Error('数据迁移不接受链接目录或文件，请先检查数据目录');
     if(stat.isDirectory())for(const entry of fs.readdirSync(current).sort()){
       const full=path.join(current,entry),rel=path.relative(directory,full);
-      if(rel.split(path.sep)[0]!=='runtime')visit(full);
+      if(included(rel))visit(full);
     }else if(stat.isFile())result[path.relative(directory,current)]=hash(fs.readFileSync(current));
     else throw new Error('数据目录包含不支持的文件类型');
   }
   visit(directory);return result;
 }
 function same(a,b){return JSON.stringify(a)===JSON.stringify(b);}
-function copyManagement(from,to){fs.cpSync(from,to,{recursive:true,errorOnExist:true,force:false,filter:file=>path.relative(from,file).split(path.sep)[0]!=='runtime'});}
+function copyManagement(from,to){fs.cpSync(from,to,{recursive:true,errorOnExist:true,force:false,filter:file=>included(path.relative(from,file))});}
 function rebaseManagement(directory,from,to){
   const oldPrefix=normalized(from),pathFields=new Set(['path','originalPath','managementDir','sourceRef','sourceRefs','sourceDir','devDir','artifactDir','dataDir','attachments']);
   const relocate=value=>{

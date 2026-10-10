@@ -26,13 +26,22 @@ test('完整备份后迁移，保留原件/密钥/记录/图片，补充资料�
  fs.mkdirSync(path.join(f.legacy,'runtime'));fs.writeFileSync(path.join(f.legacy,'runtime','cache'),'不用迁移');const before=manifest(f.legacy);
  assert.equal(prepareDataDirectory(f.options),f.target);assert.ok(JSON.stringify(manifest(f.legacy))===JSON.stringify(before),'旧数据逐字节不变');
  const next=new Store(f.target).getState(),project=next.projects[0],file=project.files.find(x=>x.id===copied.id);assert.ok(file.path.startsWith(f.target+path.sep));assert.equal(fs.readFileSync(file.path,'utf8'),'补充资料');assert.equal(project.sourceDir,source);assert.equal(project.devDir,dev);
- assert.equal(project.reports[0].text,'保留手写日报');assert.equal(next.settings.summaryPreset.instructions,'简洁');assert.deepEqual(fs.readFileSync(path.join(f.target,'model-key.encrypted')),Buffer.from([1,4,9,16]));assert.deepEqual(fs.readFileSync(path.join(f.target,'projects',p.id,'memo','image.png')),Buffer.from([7,8,9]));assert.equal(fs.existsSync(path.join(f.target,'runtime')),false);
+ assert.equal(project.reports[0].text,'保留手写日报');assert.equal(next.settings.summaryPreset.instructions,'简洁');assert.deepEqual(fs.readFileSync(path.join(f.target,'model-key.encrypted')),Buffer.from([1,4,9,16]));assert.deepEqual(fs.readFileSync(path.join(f.target,'projects',p.id,'memo','image.png')),Buffer.from([7,8,9]));assert.equal(fs.existsSync(path.join(f.target,'runtime','cache')),false);
  assert.equal(project.dailyDesk.fileCheckpoints[file.id],hash([file.path,file.mtime,file.textPreview,file.description]));assert.ok(Object.values(project.materialAnnotations).some(a=>a.manual&&a.tags.includes('重要')));
  const backups=fs.readdirSync(path.join(path.dirname(f.target),'backups'));assert.equal(backups.length,1);assert.ok(JSON.stringify(manifest(path.join(path.dirname(f.target),'backups',backups[0])))===JSON.stringify(before));
  assert.equal(prepareDataDirectory(f.options),f.target);assert.equal(fs.readdirSync(path.join(path.dirname(f.target),'backups')).length,1);
 });
 test('统一目录已有内容时不被旧安装的档案覆盖',t=>{
  const f=fixture(t);new Store(f.legacy);const existing=new Store(f.target);existing.setSettings({summaryPreset:{instructions:'我的规则'}});const before=fs.readFileSync(existing.statePath);prepareDataDirectory(f.options);assert.deepEqual(fs.readFileSync(existing.statePath),before);
+});
+
+test('密钥依赖的 Local State 一同备份迁移，浏览器缓存和其他文件排除',t=>{
+ const f=fixture(t);new Store(f.legacy);fs.writeFileSync(path.join(f.legacy,'model-key.encrypted'),'mock-encrypted-only');
+ const relative=path.join('runtime','browser','Local State'),original=JSON.stringify({os_crypt:{encrypted_key:'mock-system-wrapped-context',audit_enabled:true}});
+ fs.mkdirSync(path.join(f.legacy,'runtime','browser','Cache'),{recursive:true});fs.writeFileSync(path.join(f.legacy,relative),original);fs.writeFileSync(path.join(f.legacy,'runtime','browser','Cache','noise'),'exclude');fs.writeFileSync(path.join(f.legacy,'runtime','lockfile'),'exclude');
+ const before=manifest(f.legacy);assert.ok(before[relative]);assert.ok(!Object.keys(before).some(name=>/Cache|lockfile/.test(name)));
+ prepareDataDirectory(f.options);assert.equal(fs.readFileSync(path.join(f.target,relative),'utf8'),original);assert.equal(fs.existsSync(path.join(f.target,'runtime','browser','Cache')),false);assert.equal(fs.existsSync(path.join(f.target,'runtime','lockfile')),false);
+ const backup=fs.readdirSync(path.join(path.dirname(f.target),'backups'))[0];assert.deepEqual(manifest(path.join(path.dirname(f.target),'backups',backup)),before);
 });
 test('多个有项目的旧档案拒绝自动选择，损坏旧档案也不变成空项目',t=>{
  const f=fixture(t),state={version:1,settings:{},projects:[{id:'test'}]};for(const dir of [f.legacy,path.join(f.root,'data')]){fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,'store.json'),JSON.stringify(state));}

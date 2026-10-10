@@ -8,6 +8,7 @@ const fs=require('node:fs/promises');
 const path=require('node:path');
 const {spawn}=require('node:child_process');
 const assert=require('node:assert/strict');
+const {createHash}=require('node:crypto');
 const {Store}=require('../src/core/store.cjs');
 const ROOT=path.resolve(__dirname,'..');
 const ELECTRON=require('electron');
@@ -59,7 +60,17 @@ async function run(){
     });
   }
   try{
+    const seeded=await launch({...env,FDE_DATA_DIR:formalData});
+    const saved=await seeded.page.evaluate(()=>window.fde.request('model:save',{config:{enabled:false,provider:'deepseek',baseUrl:'https://api.deepseek.com',model:'mock-only'},apiKey:'fde-migration-test-key-only'}));
+    check(saved.keyConfigured,'旧目录用真实系统加密保存隔离测试密钥，不请求模型');
+    await close(seeded.application);
+    const originalKey=await fs.readFile(path.join(formalData,'model-key.encrypted'));
+    const originalContext=JSON.parse(await fs.readFile(path.join(formalData,'runtime','browser','Local State'),'utf8')).os_crypt;
     const primary=await launch();
+    const migratedModel=await primary.page.evaluate(()=>window.fde.request('model:settings'));
+    check(migratedModel.keyConfigured&&!migratedModel.keyError,'实际迁移后原密钥可读取，不要求重新填写');
+    check(createHash('sha256').update(await fs.readFile(path.join(unified,'model-key.encrypted'))).digest('hex')===createHash('sha256').update(originalKey).digest('hex'),'加密密钥原始字节在迁移前后保持一致');
+    check(JSON.stringify(JSON.parse(await fs.readFile(path.join(unified,'runtime','browser','Local State'),'utf8')).os_crypt)===JSON.stringify(originalContext),'系统解密配套信息随目录迁移保留');
     const runtime=await primary.application.evaluate(({app})=>({userData:app.getPath('userData'),appPath:app.getAppPath(),version:app.getVersion()}));
     check(samePath(primary.state.dataDir,unified),'首次启动将旧数据迁入统一用户数据目录');
     check(primary.state.projects.length===1&&primary.state.projects[0].id===formalProject.id&&primary.state.projects[0].records[0].title==='保留人工历史记录','通过实际renderer IPC读取到原正式项目与人工历史记录');
@@ -93,6 +104,7 @@ async function run(){
 
     const populatedDev=new Store(devData),devProject=populatedDev.createProject({name:'已有独立开发项目',sourceDir,devDir});populatedDev.setSettings({activeProjectId:devProject.id});
     const development=await launch();
+    check((await development.page.evaluate(()=>window.fde.request('model:settings'))).keyConfigured,'迁移后重启仍可读取原加密密钥');
     check(samePath(development.state.dataDir,unified)&&development.state.projects[0].id===formalProject.id,'统一目录存在后，不被后来出现的旧源码数据覆盖');
     const formalAfter=new Store(formalData).getState();
     check(formalAfter.projects.length===1&&formalAfter.projects[0].id===formalProject.id&&formalAfter.projects[0].records[0].title==='保留人工历史记录','源码启动与多实例验证结束后原正式项目和人工记录仍保留');
