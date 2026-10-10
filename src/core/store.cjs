@@ -1,4 +1,5 @@
 'use strict';
+const {materialOnly,workReport}=require('./daily-report.cjs');
 
 const fs = require('node:fs');
 const fsp = fs.promises;
@@ -1002,13 +1003,13 @@ class Store {
     const project = this._project(projectId);
     date = dateValue(date);
     const organized = project.dailyDesk?.days?.[date];
-    if (organized?.digest?.reportText && !project.records.some(r => r.date === date && r.manual && r.updatedAt > organized.organizedAt)) {
+    if (organized?.digest?.workEvidenceVersion===2 && organized.digest.reportText && !(project.codex?.summaryDismissals||[]).some(d=>d.date===date&&d.threadId===project.codex?.threadId) && !project.records.some(r => r.date === date && (r.manual || r.confirmed))) {
       return { text: organized.digest.reportText, date, recordIds: project.records.filter(r => r.date === date).map(r => r.id), method: 'model', needsReview: true };
     }
     const confirmed = project.records.filter(record => record.date === date && record.confirmed === true);
     const drafts = project.records.filter(record => record.date === date && !record.confirmed && (record.managedBy === 'codex-auto' || record.summaryOrigin)
       && !confirmed.some(done => sameIssue(record, done) || normalizedTitle(done.title) === normalizedTitle(record.title)));
-    const records = [...confirmed, ...drafts];
+    const records = [...confirmed, ...drafts].filter(record=>record.confirmed||record.manual||!materialOnly(record));
     const dailySummary = codexDefaults(project.codex).dailySummaries.find(summary => summary.date === date);
     const canonical = new Map();
     for (const item of dailySummary?.items || []) for (const key of itemKeys(item)) canonical.set(key, item.issueKey);
@@ -1019,7 +1020,7 @@ class Store {
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(record);
     }
-    const parts = [];
+    const parts = [],reportItems=[];
     for (const rounds of groups.values()) {
       rounds.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
       const latest = rounds[rounds.length - 1];
@@ -1027,9 +1028,26 @@ class Store {
       const cause = line([...rounds].reverse().find(record => record.cause)?.cause || '');
       const action = unique('action');
       const result = line(latest.result);
-      parts.push(reportLine({ ...latest, cause, action, result }));
+      reportItems.push({ ...latest, cause, action, result });
+      parts.push(reportLine(reportItems.at(-1)));
     }
-    return { text: `# ${project.name} · ${date} 日报\n\n${parts.length ? parts.join('\n\n') : '当天暂无已确认的工作记录。'}\n`, date, recordIds: records.map(record => record.id), method: drafts.length ? dailySummary?.method || 'local' : 'manual', includedDrafts: drafts.length, needsReview: drafts.length > 0 };
+    return { text: organized ? workReport(project.name,reportItems) : `# ${project.name} · ${date} 日报\n\n${parts.length ? parts.join('\n\n') : '当天暂无已确认的工作记录。'}\n`, date, recordIds: records.map(record => record.id), method: drafts.length ? dailySummary?.method || 'local' : 'manual', includedDrafts: drafts.length, needsReview: drafts.length > 0 };
+  }
+
+  combinedReport(date, drafts = []) {
+    date=dateValue(date);
+    if(!Array.isArray(drafts)||drafts.length>this.state.projects.length)throw new Error('日报草稿无效');
+    const overrides=new Map();
+    for(const draft of drafts){this._project(draft.id);if(overrides.has(draft.id)||typeof draft.text!=='string'||draft.text.length>200000)throw new Error('日报草稿无效');overrides.set(draft.id,draft.text);}
+    const texts=[],pendingProjects=[];
+    for(const project of this.state.projects){
+      const day=project.dailyDesk?.days?.[date],saved=project.reports.find(r=>r.date===date&&!r.autoArchived);
+      if(day?.unprocessedCount||day?.status==='error')pendingProjects.push(project.name);
+      const text=overrides.has(project.id)?overrides.get(project.id):saved?.text || this.generateReport(project.id,date).text;
+      const hasWork=overrides.has(project.id)||saved||project.records.some(r=>r.date===date&&(r.confirmed||r.manual||!materialOnly(r)))||day?.digest?.workEvidenceVersion===2&&day.digest.reportText;
+      if(hasWork&&text.trim())texts.push(`## ${project.name}\n\n${text.replace(/^# .+\r?\n+/,'').trim()}`);
+    }
+    return {date,pendingProjects,text:`# ${date} 工作日报\n\n${texts.join('\n\n') || '当天暂无已整理工作。'}`};
   }
 
   saveReport(projectId, date, text, { automatic = false } = {}) {

@@ -11,7 +11,7 @@ async function fixture(t){
  const service=new DailyDesk({store,reader,now:()=>time,getModel:()=>({config:{enabled:true,provider:'compatible',baseUrl:'http://127.0.0.1:1234/v1',model:'test'},apiKey:'not-real'}),request:async (_c,_k,m)=>{
   const input=JSON.parse(m[1].content);calls.push(input);prompts.push(m[0].content);if(fail)throw new Error('模拟连接失败');
   const sourceIds=[bad?'unknown':input.sources[0].id];
-  return {overview:{scene:'按订单配载',requirements:'规则可修改',progress:'完成提单表格导入',nextAction:'确认 ERP 提单来源',blocker:'ERP 字段未确定'},items:[{issueKey:'bill',title:'完善提单导入',cause:'ERP 字段未知',action:'采用表格导入',result:'导入完成，ERP 待补充',status:'进行中',sourceIds}],requirements:[{requirementKey:'bill-import',title:'提单数据导入',description:'保留展示编辑',status:'已明确',sourceIds}],confirmations:[{confirmationKey:'erp-bill',scenario:'ERP 提单字段不全',question:'完整字段从哪里获取？',workaround:'先用表格导入',status:'待确认',resolution:'',sourceIds}],reportText:`# ${input.project}\n\n已完成提单表格导入，ERP 数据来源待确认。`};
+  return {overview:{scene:'按订单配载',requirements:'规则可修改',progress:'完成提单表格导入',nextAction:'确认 ERP 提单来源',blocker:'ERP 字段未确定'},items:[{issueKey:'bill',title:'完善提单导入',cause:'ERP 字段未知',action:'采用表格导入',result:'导入完成，ERP 待补充',status:'进行中',sourceIds}],requirements:[{requirementKey:'bill-import',title:'提单数据导入',description:'保留展示编辑',status:'已明确',sourceIds}],confirmations:[{confirmationKey:'erp-bill',scenario:'ERP 提单字段不全',question:'完整字段从哪里获取？',workaround:'先用表格导入',status:'待确认',resolution:'',sourceIds}],reportIssueKeys:['bill'],reportText:`# ${input.project}\n\n已完成提单表格导入，ERP 数据来源待确认。`};
  }});
  const add=(name,id,date='2026-10-10',text='ERP 提单字段不全，先表格导入')=>{const array=turns.get(name)||[];array.push({id,date,timestamp:`${date}T03:12:00Z`,completed:true,userText:text,assistantText:'已完成表格导入，ERP 提单来源后续确认',sourceRef:`codex:${name}#turn=${id}`,attachments:[]});turns.set(name,array);};
  return {store,service,projects,calls,prompts,add,setTime:value=>time=new Date(value),setFail:value=>fail=value,setBad:value=>bad=value,reader,dir};
@@ -86,3 +86,29 @@ test('重复确认事项无后续证据却有冲突结论时保持待确认',()=
 test('长日只单个有界请求，剩余内容留待下一批，不把历史混入',async t=>{const f=await fixture(t);for(let i=0;i<20;i++)f.add('甲项目',`t${i}`,'2026-10-10','客户需求'.repeat(1000));const result=await f.service.run(f.projects[0].id);assert.equal(f.calls.length,1);assert.ok(result.pending>0);assert.ok(result.partial);assert.ok(f.calls[0].sources.reduce((n,s)=>n+s.text.length,0)<=18000);});
 test('来源资料仅提交新增简短摘录，重复操作不重发',async t=>{const f=await fixture(t),p=f.projects[0];fs.writeFileSync(path.join(p.sourceDir,'要求.md'),'业务要求'.repeat(2000));await f.store.scanProject(p.id);await f.service.run(p.id);assert.ok(f.calls[0].sources[0].text.length<=1800);assert.ok(!f.calls[0].sources.some(s=>s.sourceRef.startsWith(p.devDir)));await f.service.run(p.id);assert.equal(f.calls.length,1);});
 test('手改工作记录与需求仍受已有保护合并契约保护',async t=>{const f=await fixture(t),id=f.projects[0].id;f.add('甲项目','a');await f.service.run(id);let p=f.store.getState().projects[0];f.store.upsertRecord(id,{...p.records[0],result:'人工改过的结果',confirmed:true});f.add('甲项目','b');await f.service.run(id);p=f.store.getState().projects[0];assert.equal(p.records[0].result,'人工改过的结果');});
+
+test('资料更新只整理需求，不冒充当天工作、不覆盖已完成成果',async t=>{
+ const f=await fixture(t),id=f.projects[0].id;f.add('甲项目','done');await f.service.run(id);const first=f.store.generateReport(id,'2026-10-10').text;
+ fs.writeFileSync(path.join(f.projects[0].sourceDir,'历史账单.md'),'2025年各月收费标准');await f.store.scanProject(id);await f.service.run(id);
+ const p=f.store.getState().projects[0];assert.ok(f.calls[1].sources.every(s=>s.contextOnly));assert.equal(p.records.length,1);assert.equal(f.store.generateReport(id,'2026-10-10').text,first);assert.equal((await f.service.run(id)).skipped,true);assert.equal(f.calls.length,2);
+});
+test('文件首次导入可产出需求，但无当日对话不生成工作或日报',async t=>{
+ const f=await fixture(t),p=f.projects[0];fs.writeFileSync(path.join(p.sourceDir,'收费标准.md'),'历史空运标准');await f.store.scanProject(p.id);await f.service.run(p.id);
+ const next=f.store.getState().projects[0];assert.equal(next.records.length,0);assert.equal(next.requirements.length,1);assert.equal(next.dailyDesk.days['2026-10-10'].digest.reportText,'');assert.ok(!f.store.combinedReport('2026-10-10').text.includes(p.name));
+});
+test('旧日报按当日工作本地恢复，汇总使用同一正文与手动草稿，跨日不串',async t=>{
+ const f=await fixture(t),id=f.projects[0].id;f.add('甲项目','done');await f.service.run(id);
+ const p=f.store.state.projects[0],summary=p.codex.dailySummaries[0];summary.items.push({issueKey:'false-history',title:'历史账单分析',action:'分析去年账单',result:'历史规则',turnIds:[],sourceRef:'D:\\资料\\历史账单.xlsx'});p.records.push({...summary.items.at(-1),id:'false-record',date:'2026-10-10',managedBy:'codex-auto',cycleId:p.activeCycleId,updatedAt:new Date().toISOString()});
+ p.dailyDesk.days['2026-10-10'].digest={reportText:'错误的历史账单日报'};
+ const text=f.store.generateReport(id,'2026-10-10').text;assert.match(text,/完善提单导入/);assert.doesNotMatch(text,/历史账单|去年/);assert.ok(f.store.combinedReport('2026-10-10').text.includes(text));
+ assert.ok(f.store.combinedReport('2026-10-10',[{id,text:'手工草稿：今天已同步交付'}]).text.includes('手工草稿：今天已同步交付'));f.store.saveReport(id,'2026-10-10','正式人工日报');assert.ok(f.store.combinedReport('2026-10-10').text.includes('正式人工日报'));assert.ok(!f.store.combinedReport('2026-10-11').text.includes('甲项目'));assert.throws(()=>f.store.combinedReport('2026-10-10',[{id,text:5}]),/草稿无效/);assert.equal(f.calls.length,1);
+});
+test('模型日报遗漏当日已有事项时不采用，按工作证据本地补齐，无第二次请求',async t=>{
+ const f=await fixture(t),id=f.projects[0].id;f.add('甲项目','done');await f.service.run(id);
+ f.service.request=async()=>({overview:{},requirements:[],confirmations:[],items:[{issueKey:'delivery',title:'同步交付',action:'同步到宿主和GitLab',result:'交付完成',sourceIds:['turn:deliver']}],reportIssueKeys:['delivery'],reportText:'只写同步交付，漏掉之前导入'});f.add('甲项目','deliver');await f.service.run(id);
+ const text=f.store.generateReport(id,'2026-10-10').text;assert.match(text,/完善提单导入/);assert.match(text,/同步交付/);assert.doesNotMatch(text,/漏掉之前/);
+});
+
+test('本地日报补全按关联事项归并，保留人工确认而不附测试次数',()=>{const {workReport}=require('../src/core/daily-report.cjs');const text=workReport('账单',[{title:'转换并同步交付',action:'导入汇总表生成应付流水',result:'40项测试通过，已同步宿主；尚未客户验收',turnIds:['today']},{title:'人工核对资料',action:'核对客户收费口径',confirmed:true,sourceRef:'D:\\资料\\标准.xlsx'}]);assert.match(text,/已同步宿主/);assert.match(text,/尚未客户验收/);assert.match(text,/人工核对资料/);assert.doesNotMatch(text,/40项测试/);});
+
+test('旧文件误记仅从工作展示过滤，原记录不删，人工核对仍可见',()=>{const {workProject}=require('../src/core/daily-report.cjs');const item={issueKey:'file-only',turnIds:[],sourceRef:'D:\\资料\\历史账单.xlsx'},record={...item,date:'2026-10-10',managedBy:'codex-auto'},p={records:[record],codex:{dailySummaries:[{date:'2026-10-10',items:[item]}]}};const view=workProject(p);assert.equal(view.records.length,0);assert.equal(view.codex.dailySummaries[0].items.length,0);assert.equal(p.records.length,1);assert.equal(p.codex.dailySummaries[0].items.length,1);record.confirmed=true;assert.equal(workProject(p).records.length,1);assert.equal(workProject(p).codex.dailySummaries[0].items.length,1);});

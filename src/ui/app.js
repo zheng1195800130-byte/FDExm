@@ -197,7 +197,6 @@ async function analyzeRequirements(){
 }
 async function organizeDaily(all=false,date=today()){
   const p=project();if(!p||dailyBusy)return;
-  const editor=$('report-text');if(editor&&currentReportText(p)!==reportText(p))reportDrafts.set(reportKey(p),editor.value);
   dailyBusy=true;render();
   try{const result=await request(all?'daily:all':'daily:run',{id:p.id,date});const errors=result.results?.filter(r=>r.error)||[];await refresh();notify(errors.length?errors.map(r=>`${r.name}：${r.error}`).join('；'):all?`已检查 ${result.results.length} 个项目，仅新增内容调用模型`:result.skipped?result.message:result.pending?`本批已整理，还有 ${result.pending} 项待整理`:'已更新项目进展、需求确认、工作记录和日报',!!errors.length);}
   finally{dailyBusy=false;render();}
@@ -209,23 +208,31 @@ function renderRecords(p){
   (records.length?[...groups].map(([date,items])=>`<div class="records-day"><h2>${esc(date)}</h2><span>${items.length} 项工作记录</span></div>${items.map(r=>`<article class="record-card"><div class="record-head"><div><div class="item-key">${esc(r.issueKey||'未设置事项编号')}</div><h3>${esc(r.title)}</h3></div><div class="actions">${badge(r.status)}<button class="icon-btn" data-action="edit-record" data-item="${esc(r.id)}" aria-label="编辑 ${esc(r.title)}">${icon('edit',16)}</button></div></div><div class="record-columns"><div>${r.cause?`<div class="record-field"><div class="data-label">原因</div><div class="data-value">${esc(r.cause)}</div></div>`:''}<div class="record-field"><div class="data-label">处理</div><div class="data-value">${esc(r.action||'尚未填写')}</div></div></div><div class="record-field"><div class="data-label">结果</div><div class="data-value">${esc(r.result||'尚未明确')}</div></div></div>${r.attachments?.length?`<div class="attachment-line">附件：${esc(r.attachments.map(sourceText).join('\n'))}</div>`:''}<div class="record-footer"><div class="confirmation ${r.confirmed?'':'unconfirmed'}">${icon(r.confirmed?'check':'clock',13)}${automaticRecord(r)?'自动整理 · 可编辑':r.confirmed?'已核对 · 可用于日报':r.summaryOrigin?'已手动调整 · 待核对':'手工草稿 · 确认后可用于日报'}</div>${r.sourceRef?`<span class="small-text muted record-source">来源：${esc(sourceText(r.sourceRef))}</span>`:''}</div></article>`).join('')}`).join(''):empty('今天的有效工作，从这里留下',recordDate?'所选日期暂无记录。':'记下问题、原因、有效处理和结果。长对话留在 Codex，摘要留在这里。',actionButton('new-record','添加工作记录','plus','','primary'),'records'));
 }
 function reportKey(p,date=reportDate){return `${p.id}:${date}`;}
-function reportSignature(p,date){return JSON.stringify([summaryFor(p,date)?.fingerprint,summaryFor(p,date)?.updatedAt,(p.records||[]).filter(r=>r.date===date).map(r=>[r.id,r.updatedAt,r.confirmed,r.title,r.result]),(p.codex?.summaryDismissals||[]).filter(d=>d.date===date&&d.threadId===p.codex?.threadId)]);}
-function reportText(p,date=reportDate){const key=reportKey(p,date),generated=reportGenerated.get(key),saved=(p.reports||[]).find(r=>r.date===date),hasDismissals=(p.codex?.summaryDismissals||[]).some(d=>d.date===date&&d.threadId===p.codex?.threadId);if(reportDrafts.has(key))return reportDrafts.get(key);if(saved)return saved.text||'';return (generated?.signature===reportSignature(p,date)?generated.text:'')||(!hasDismissals?(p.dailyDesk?.days?.[date]?.digest?.reportText||summaryFor(p,date)?.reportText):'')||'';}
+function reportSignature(p,date){return JSON.stringify([p.dailyDesk?.days?.[date]?.organizedAt,p.dailyDesk?.days?.[date]?.digest?.reportText,(p.reports||[]).find(r=>r.date===date)?.updatedAt,summaryFor(p,date)?.fingerprint,summaryFor(p,date)?.updatedAt,(p.records||[]).filter(r=>r.date===date).map(r=>[r.id,r.updatedAt,r.confirmed,r.title,r.action,r.result]),(p.codex?.summaryDismissals||[]).filter(d=>d.date===date&&d.threadId===p.codex?.threadId)]);}
+function reportText(p,date=reportDate){
+  const key=reportKey(p,date),generated=reportGenerated.get(key),saved=(p.reports||[]).find(r=>r.date===date),validGenerated=generated?.signature===reportSignature(p,date);
+  if(reportDrafts.has(key))return reportDrafts.get(key);
+  if(validGenerated&&generated.explicit)return generated.text||'';
+  if(saved&&!saved.autoArchived)return saved.text||'';
+  if(validGenerated)return generated.text||'';
+  const digest=p.dailyDesk?.days?.[date]?.digest,hasDismissals=(p.codex?.summaryDismissals||[]).some(d=>d.date===date&&d.threadId===p.codex?.threadId);
+  return !hasDismissals&&digest?.workEvidenceVersion===2?digest.reportText||'':'';
+}
 function currentReportText(p,date=reportDate){const editor=$('report-text');return route==='reports'&&editor?.dataset.reportKey===reportKey(p,date)?editor.value:reportText(p,date);}
 function reportPreviewMarkup(text){return text.trim()?renderMarkdown(text):'<div class="report-preview-empty">当天暂无日报内容。关联会话后，有效工作会自动整理到这里，也可切换到“编辑原文”填写。</div>';}
 async function ensureReportContent(p,date){
   const key=reportKey(p,date),signature=reportSignature(p,date);
-  if(reportDrafts.has(key)||(p.reports||[]).some(r=>r.date===date)||reportGenerated.get(key)?.signature===signature||reportPending.has(key))return;
+  if(reportDrafts.has(key)||(p.reports||[]).some(r=>r.date===date&&!r.autoArchived)||reportGenerated.get(key)?.signature===signature||reportPending.has(key))return;
   reportPending.set(key,signature);
   try{
     const result=await request('report:generate',{id:p.id,date});
     reportGenerated.set(key,{...(typeof result==='string'?{text:result}:result),signature});
-    if(route==='reports'&&project()?.id===p.id&&reportDate===date&&!reportDrafts.has(key)&&!(project().reports||[]).some(r=>r.date===date)){
+    if(route==='reports'&&project()?.id===p.id&&reportDate===date&&!reportDrafts.has(key)&&!(project().reports||[]).some(r=>r.date===date&&!r.autoArchived)&&reportSignature(project(),date)===signature){
       const text=reportGenerated.get(key).text||'',editor=$('report-text');if(editor)editor.value=text;
       const preview=$('report-preview');if(preview)preview.innerHTML=reportPreviewMarkup(text);
       const note=$('report-draft-note');if(note)note.textContent=result.needsReview?'自动草稿 · 待核对':'已整理 · 可编辑';
     }
-  }catch(error){reportGenerated.set(key,{text:summaryFor(p,date)?.reportText||'',signature,error:error.message});if(route==='reports'&&project()?.id===p.id&&reportDate===date)notify(error.message,true);}
+  }catch(error){reportGenerated.set(key,{text:'',signature,error:error.message});if(route==='reports'&&project()?.id===p.id&&reportDate===date)notify(error.message,true);}
   finally{reportPending.delete(key);const current=project();if(route==='reports'&&current?.id===p.id&&reportDate===date&&reportSignature(current,date)!==signature)void ensureReportContent(current,date);}
 }
 function renderReports(p){
@@ -487,8 +494,8 @@ async function handleAction(action,target){
     case 'clear-record-date':recordDate='';render();break;
     case 'new-cycle':showForm('新建交付周期','当前周期结束后，新的明确交付目标进入下一周期。',field('name','周期名称','',{required:true,placeholder:'例如：第二阶段 / 报表功能交付'}),async values=>{await request('cycle:start',{id,name:values.name});await refresh();notify('新周期已建立');});break;
     case 'new-delivery':deliveryForm();break;
-    case 'generate-report':{const date=reportDate,result=await request('report:generate',{id,date});reportDrafts.set(reportKey(p,date),typeof result==='string'?result:result.text||'');if(route==='reports'&&project()?.id===p.id&&reportDate===date)render();notify('已生成日报草稿，可修改后保存');break;}
-    case 'save-report':{const date=reportDate,key=reportKey(p,date),text=currentReportText(p,date);await request('report:save',{id,date,text});reportDrafts.set(key,text);await refresh();notify('日报已保存');break;}
+    case 'generate-report':{const date=reportDate,result=await request('report:generate',{id,date}),key=reportKey(p,date);reportDrafts.delete(key);reportGenerated.set(key,{...(typeof result==='string'?{text:result}:result),signature:reportSignature(project(),date),explicit:true});if(route==='reports'&&project()?.id===p.id&&reportDate===date)render();notify('已生成日报草稿，可修改后保存');break;}
+    case 'save-report':{const date=reportDate,key=reportKey(p,date),text=currentReportText(p,date);await request('report:save',{id,date,text});reportDrafts.delete(key);reportGenerated.delete(key);await refresh();notify('日报已保存');break;}
     case 'copy-report':{const text=currentReportText(p);if(!text.trim())throw new Error('日报内容为空，请先生成或填写。');await request('clipboard:text',{text});notify('日报已复制');break;}
     case 'export-report':{const date=reportDate,text=currentReportText(p,date);if(!text.trim())throw new Error('日报内容为空，请先生成或填写。');const output=await request('report:export',{id,date,text});if(output)notify('日报已导出');break;}
     case 'edit-report':case 'preview-report':{const key=reportKey(p),text=currentReportText(p);if(text!==reportText(p))reportDrafts.set(key,text);reportModes.set(key,action==='edit-report'?'edit':'preview');renderReports(p);(action==='edit-report'?$('report-text'):$('report-preview-mode'))?.focus({preventScroll:true});break;}
@@ -500,7 +507,7 @@ async function handleAction(action,target){
     case 'run-summary':await organizeDaily(false,codexDate);break;
     case 'daily-current':await organizeDaily(false,route==='reports'?reportDate:route==='codex'?codexDate:route==='records'?(recordDate||today()):today());break;
     case 'daily-all':await organizeDaily(true,today());break;
-    case 'daily-report-all':{const value=await request('daily:report-all',{date:today()});showForm('全部项目日报',value.date,`<div class="markdown-body">${renderMarkdown(value.text)}</div>`,async()=>{await request('clipboard:text',{text:value.text});notify('已复制全部项目日报');},{submitLabel:'复制日报'});break;}
+    case 'daily-report-all':{const date=route==='reports'?reportDate:today(),drafts=state.projects.filter(proj=>reportDrafts.has(reportKey(proj,date))||(reportGenerated.get(reportKey(proj,date))?.explicit&&reportGenerated.get(reportKey(proj,date))?.signature===reportSignature(proj,date))).map(proj=>({id:proj.id,text:currentReportText(proj,date)})),value=await request('daily:report-all',{date,drafts});showForm('全部项目日报',value.date,`${value.pendingProjects?.length?`<div class="notice warning">${esc(value.pendingProjects.join('、'))} 还有未整理内容，当前显示已保存成果。</div>`:''}<div class="markdown-body">${renderMarkdown(value.text)}</div>`,async()=>{await request('clipboard:text',{text:value.text});notify('已复制全部项目日报');},{submitLabel:'复制日报'});break;}
     case 'daily-yesterday':await organizeDaily(false,new Date(Date.parse(today()+'T00:00:00Z')-86400000).toISOString().slice(0,10));break;
     case 'material-folder-copy':await request('material:folder-copy-path',{id,targetId:target.dataset.target});notify('目录路径已复制');break;
     case 'material-folder-open':await request('material:folder-open',{id,targetId:target.dataset.target});break;

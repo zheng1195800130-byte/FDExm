@@ -268,14 +268,7 @@ async function dispatch(action, p, sender) {
     case 'daily:run': return dailyDesk.run(p.id,p.date || localDate(new Date()));
     case 'daily:all': return dailyDesk.runAll(p.date || localDate(new Date()));
     case 'daily:raw': return dailyDesk.raw(p.id,p.date || localDate(new Date()));
-    case 'daily:report-all': {
-      const date=p.date || localDate(new Date());
-      const texts=store.getState().projects.filter(proj=>proj.reports.some(r=>r.date===date)||proj.records.some(r=>r.date===date)||proj.dailyDesk?.days?.[date]?.digest?.reportText).map(proj=>{
-        const text=proj.reports.find(r=>r.date===date)?.text || store.generateReport(proj.id,date).text;
-        return `## ${proj.name}\n\n${text.replace(/^# .+\r?\n+/,'').trim()}`;
-      });
-      return {date,text:`# ${date} 工作日报\n\n${texts.join('\n\n') || '当天暂无已整理工作。'}`};
-    }
+    case 'daily:report-all': return store.combinedReport(p.date || localDate(new Date()),p.drafts || []);
     case 'project:create': { const made = store.createProject(p); store.setSettings({ activeProjectId: made.id }); return store.scanProject(made.id); }
     case 'project:update': {
       const updated = store.updateProject(p.id, p.patch);
