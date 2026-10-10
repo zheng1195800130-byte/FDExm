@@ -1,0 +1,43 @@
+{
+  "name": "fde-desk",
+  "version": "0.5.7",
+  "description": "个人 FDE 工作台：资料、需求、工作记录与项目进度",
+  "private": true,
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "start": "node scripts/start.cjs",
+    "dev": "node scripts/start.cjs --dev",
+    "test": "node --test tests/*.test.cjs",
+    "test:ui": "node scripts/smoke.cjs",
+    "test:ipc": "node scripts/ipc-regression.cjs",
+    "test:project": "node scripts/project-audit.cjs",
+    "test:summary": "node scripts/summary-smoke.cjs",
+    "test:models": "node scripts/models-smoke.cjs",
+    "test:rules": "node scripts/rules-smoke.cjs",
+    "test:related": "node scripts/related-markdown-smoke.cjs",
+    "test:history": "node scripts/history-smoke.cjs",
+    "test:history-project": "node scripts/history-project-audit.cjs",
+    "test:events": "node scripts/events-smoke.cjs",
+    "test:materials": "node scripts/material-refresh-smoke.cjs",
+    "test:startup": "node scripts/startup-smoke.cjs",
+    "test:memos": "node scripts/memo-smoke.cjs",
+    "test:threads": "node scripts/project-threads-smoke.cjs",
+    "test:requirements": "node scripts/requirements-integration-smoke.cjs",
+    "test:requirements-ui": "node scripts/requirements-ui-smoke.cjs",
+    "pack": "node scripts/pack.cjs",
+    "check:publish": "node scripts/check-publish.cjs"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "dompurify": "3.4.16",
+    "fast-xml-parser": "^5.3.0",
+    "ignore": "7.0.12",
+    "marked": "18.1.0",
+    "pdf-parse": "1.1.1"
+  },
+  "devDependencies": {
+    "@electron/packager": "^18.3.6",
+    "electron": "^44.6.0",
+    "playwright": "^1.56.0"
+  }
+}

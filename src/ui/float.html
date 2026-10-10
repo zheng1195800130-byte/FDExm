@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'"><title>FDE Desk · 资料速取</title><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="float.css"></head>
+<body class="float-body">
+<section class="float-shell">
+  <header class="float-header"><div class="float-brand"><span class="float-logo">f<span>·</span></span><strong>资料速取</strong></div><div class="float-tools"><button id="pin" class="icon-btn" aria-label="切换置顶" title="切换置顶" aria-pressed="true"></button><button id="collapse" class="icon-btn" aria-label="收回悬浮球" title="收回悬浮球"></button></div></header>
+  <div class="float-content">
+    <label for="float-project" class="float-label">当前项目</label><select id="float-project" aria-label="当前项目"><option>正在打开…</option></select>
+    <div class="float-tabs" role="tablist" aria-label="悬浮窗内容">
+      <button id="float-tab-files" role="tab" aria-selected="true" aria-controls="float-files-panel" tabindex="0">资料</button>
+      <button id="float-tab-memo" role="tab" aria-selected="false" aria-controls="float-memo-panel" tabindex="-1">备忘录</button>
+    </div>
+    <section id="float-files-panel" class="float-view float-files-panel" role="tabpanel" aria-labelledby="float-tab-files">
+      <div class="search-box float-search"><span id="search-icon"></span><input id="float-search" type="search" aria-label="检索资料" placeholder="关键词可用空格分开…"></div>
+      <div class="float-material-filters"><label class="float-format-filter">文件类别 <select id="float-group" aria-label="文件类别"><option value="">全部格式</option><option>文档</option><option>表格</option><option>图片</option><option>压缩包</option><option>其他</option></select></label>
+      <label class="float-format-filter">资料标签 <select id="float-tag" aria-label="资料标签"><option value="">全部标签</option></select></label></div>
+      <div class="float-directory-toolbar"><div id="float-location"></div><button class="btn small material-refresh" id="float-refresh" title="重新读取当前项目目录中的新增和修改文件" disabled>刷新</button></div>
+      <div id="float-scan-status" class="material-scan-status" role="status" aria-live="polite" hidden></div><div id="float-files" class="float-files"></div>
+    </section>
+    <section id="float-memo-panel" class="float-view float-memo-panel" role="tabpanel" aria-labelledby="float-tab-memo" hidden>
+      <div class="memo-toolbar"><button id="memo-paste" class="btn small" disabled>粘贴</button><button id="memo-add-images" class="btn small" disabled>添加图片</button><button id="memo-copy-text" class="btn small" disabled>复制文字</button></div>
+      <div class="memo-editor-label"><label for="memo-text">随手记</label><span id="memo-count">0 / 200,000</span></div>
+      <textarea id="memo-text" class="memo-editor" maxlength="200000" spellcheck="false" aria-describedby="memo-help memo-save-status" placeholder="随手记下想法、问题或待办…&#10;也可以 Ctrl+V 粘贴文字和截图。" disabled></textarea>
+      <div class="memo-status-line"><span id="memo-save-status" role="status" aria-live="polite">先关联项目，再使用备忘录</span><button id="memo-retry" class="link-btn" type="button" hidden>重试保存</button></div>
+      <p id="memo-help" class="memo-help">本项目独立保存 · 可粘贴或拖入图片</p>
+      <div id="memo-images" class="memo-images" aria-label="备忘录图片"><div class="memo-image-empty">截图和图片会保存在这里</div></div>
+    </section>
+  </div>
+  <footer class="float-footer"><button id="float-material" class="btn small">补充资料</button><button id="float-workbench" class="btn primary small">打开工作台</button></footer>
+</section><span class="float-resize-grip" aria-hidden="true"></span><div id="toast" class="toast" role="status"></div><script type="module" src="float.js"></script>
+</body></html>

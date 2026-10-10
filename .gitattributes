@@ -1,0 +1,8 @@
+* text=auto
+*.cjs text eol=lf
+*.js text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+.githooks/* text eol=lf
+*.png binary
+*.ico binary

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'">
+  <title>FDE Desk · 工作台</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#overview" data-route="overview" aria-label="FDE Desk 首页"><span class="brand-mark">f<span>·</span></span><span>FDE Desk<small>个人交付工作台</small></span></a>
+      <div class="project-switch"><label for="project-select">当前项目</label><div class="project-select-row"><select id="project-select" aria-label="切换项目"><option value="">尚未关联项目</option></select><button class="icon-btn" id="add-project" title="关联新项目" aria-label="关联新项目">＋</button></div></div>
+      <nav id="navigation" aria-label="主要功能"></nav>
+      <div class="sidebar-bottom"><nav id="global-actions" class="global-actions" aria-label="全局操作"></nav><div class="local-note"><span class="status-dot"></span>资料与记录保存在本机</div><button class="compact-btn" id="compact-button"><span id="compact-icon"></span>收起为悬浮球</button><div class="shortcut-note">Ctrl + Shift + Space 快速展开</div></div>
+    </aside>
+    <main class="main-area">
+      <header class="topbar"><div class="breadcrumb">工作空间<span>/</span><strong id="breadcrumb-project">我的项目</strong></div><div class="topbar-right"><span id="today-label"></span><span class="local-badge">本地工作</span></div></header>
+      <div id="workspace" class="workspace" aria-live="polite"><div class="loading-state">正在打开工作台…</div></div>
+    </main>
+  </div>
+  <dialog id="form-dialog" class="dialog"><div id="dialog-content"></div></dialog>
+  <dialog id="preview-dialog" class="dialog preview-dialog"><div id="preview-content"></div></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

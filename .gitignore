@@ -1,0 +1,24 @@
+node_modules/
+data/
+release/
+test-output/
+*.log
+.npm-cache/
+.test-tmp/
+.tmp/
+.electron-cache/
+.pack-tmp/
+
+# Local credentials and management archives, even when copied outside data/.
+.env
+.env.*
+model-key.encrypted*
+store.json
+store.backup.json
+store.json.tmp-*
+store.backup.json.tmp-*
+*.pem
+*.key
+.fde-build/
+backups/
+*.encrypted
