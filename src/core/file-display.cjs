@@ -1,6 +1,7 @@
 'use strict';
 const path = require('node:path');
 const ignore = require('ignore');
+const {isOfficeTemporaryFile}=require('./files.cjs');
 const {targets,annotated}=require('./material-tags.cjs');
 const DEFAULT_IGNORE_RULES = '# 常见代码与构建文件（只隐藏展示，不删除原件）\n*.java\n*.js\n*.jsx\n*.ts\n*.tsx\n*.mjs\n*.cjs\n*.py\n*.pyc\n*.cs\n*.c\n*.cpp\n*.h\n*.hpp\n*.go\n*.rs\n*.php\n*.class\n*.map\n*.lock\n*.log\nnode_modules/\n.git/\n__pycache__/\n';
 function displaySettings(input = {}) {
@@ -19,7 +20,7 @@ function relativeMaterialPath(project, file) {
 }
 function displayProject(project, settings) {
   const matcher=ignore({ignorecase:true}).add(displaySettings(settings).ignoreRules);
-  const apply=item=>{const relativePath=relativeMaterialPath(project,item);return {...annotated(project,item),relativePath,displayIgnored:matcher.ignores(relativePath+(item.type==='folder'?'/':''))};};
+  const apply=item=>{const relativePath=relativeMaterialPath(project,item);return {...annotated(project,item),relativePath,displayIgnored:(item.type!=='folder'&&isOfficeTemporaryFile(item.path||item.name||''))||matcher.ignores(relativePath+(item.type==='folder'?'/':''))};};
   const catalog=targets(project),folders=catalog.filter(item=>item.type==='folder').map(item=>({...apply(item),relativePath:item.root?'':relativeMaterialPath(project,item)}));
   const byFileId=new Map(catalog.filter(item=>item.type==='file').map(item=>[item.fileId,item]));
   return {...project,files:(project.files||[]).map(file=>apply({...file,targetId:byFileId.get(file.id)?.id,type:'file'})),folders:folders.map(folder=>({...folder,targetId:folder.id}))};

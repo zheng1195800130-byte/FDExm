@@ -143,3 +143,11 @@ test('预览直接读取等大小等时间的新正文，保留文件身份和�
   assert.equal(preview.file.description, '人工用途说明');
   assert.equal(fs.statSync(file).mtime.toISOString(), fixed.toISOString());
 });
+
+test('刷新跳过 Office 打开产生的临时文件并清理旧索引，原件保留', async t => {
+  const {sourceDir,store,project}=fixture(t),real=path.join(sourceDir,'业务确认单.docx'),temp=path.join(sourceDir,'~$业务确认单.docx'),note=path.join(sourceDir,'~业务备注.md');
+  writeDocx(real,'真实业务资料');fs.writeFileSync(temp,'Office 锁定数据，不是有效文档');fs.writeFileSync(note,'保留正常波浪号笔记');
+  let result=await store.scanProject(project.id);assert.ok(result.files.some(f=>f.path===real));assert.ok(result.files.some(f=>f.path===note));assert.ok(!result.files.some(f=>f.path===temp));
+  store.state.projects.find(p=>p.id===project.id).files.push({id:'legacy-office-temp',name:path.basename(temp),path:temp,kind:'原始资料'});
+  result=await store.scanProject(project.id);assert.ok(!result.files.some(f=>f.path===temp));assert.equal(fs.readFileSync(temp,'utf8'),'Office 锁定数据，不是有效文档');
+});

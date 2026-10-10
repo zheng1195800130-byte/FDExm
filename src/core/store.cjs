@@ -9,7 +9,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { promisify } = require('node:util');
 const realpath = promisify(fs.realpath);
-const { scanDirectory, inspectFile, canonical, isWithin, shouldIndexFile, IMAGE_EXTS } = require('./files.cjs');
+const { scanDirectory, inspectFile, canonical, isWithin, shouldIndexFile, isOfficeTemporaryFile, IMAGE_EXTS } = require('./files.cjs');
 
 const REQUIREMENT_STATUS = new Set(['待确认', '已明确', '已变更', '已完成']);
 const RECORD_STATUS = new Set(['进行中', '已完成', '待验证', '未解决']);
@@ -501,6 +501,7 @@ class Store {
     for (const old of project.files) {
       if (old.kind === '开发成果' && project.indexArtifacts === false) continue;
       if (foundPaths.has(canonical(old.path))) continue;
+      if (isOfficeTemporaryFile(old.path)) continue;
       if (old.kind === '原始资料' && !shouldIndexFile(old.path, project.sourceDir, old.kind, sourceOptions)) continue;
       if (old.kind === '开发成果' && !shouldIndexFile(old.path, artifactDir, old.kind, devOptions)) continue;
       let missing = true;

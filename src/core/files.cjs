@@ -41,7 +41,10 @@ function isExcludedPath(filePath, root, kind, options = {}, isDirectory = false)
   });
 }
 
+function isOfficeTemporaryFile(filePath) { return path.basename(filePath).startsWith('~$'); }
+
 function shouldIndexFile(filePath, root, kind, options = {}) {
+  if (isOfficeTemporaryFile(filePath)) return false;
   if (isExcludedPath(filePath, root, kind, options)) return false;
   const extension = path.extname(filePath).toLowerCase();
   const supported = kind === '开发成果' ? DEV_EXTS : SOURCE_EXTS;
@@ -218,4 +221,4 @@ async function scanDirectory(root, kind, options = {}) {
   return { files: results, folders, warnings, complete: !limited && warnings.length === 0 };
 }
 
-module.exports = { scanDirectory, extractText, inspectFile, canonical, isWithin, isExcludedPath, shouldIndexFile, IMAGE_EXTS, SOURCE_EXTS, DEV_EXTS };
+module.exports = { scanDirectory, extractText, inspectFile, canonical, isWithin, isExcludedPath, shouldIndexFile, isOfficeTemporaryFile, IMAGE_EXTS, SOURCE_EXTS, DEV_EXTS };
