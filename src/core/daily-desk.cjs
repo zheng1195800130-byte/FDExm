@@ -14,6 +14,33 @@ const validDate = date => typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test
 const sourceFiles = p => (p.files || []).filter(f => !f.hidden && !f.missing && ['原始资料', '补充资料'].includes(f.kind));
 // Previous summaries are context, never a requirement to fabricate fresh evidence.
 const priorContext = i => ({issueKey:i.issueKey,title:i.title,cause:clean(i.cause,100),action:clean(i.action,100),result:clean(i.result,140),status:i.status,relatedIssueKeys:i.relatedIssueKeys || [],sourceIds:[...new Set([...(i.sourceIds || []),...(i.turnIds || []).map(id=>`turn:${id}`)])]});
+// Coalesce only explicit identities/known aliases after evidence validation.
+// Equal titles, shared sources or belonging to the same project are not identity.
+function mergeLinked(rows,key,related,existing=[]){
+  const ids=row=>[row[key],...(row[related]||[])],groups=[];
+  for(const row of rows){
+    const keys=new Set(ids(row));let changed=true;
+    while(changed){changed=false;for(const old of existing)if(ids(old).some(id=>keys.has(id)))for(const id of ids(old))if(!keys.has(id)){keys.add(id);changed=true;}}
+    const matches=groups.filter(group=>[...group.keys].some(id=>keys.has(id)));
+    const members=[...matches.flatMap(group=>group.rows),row];for(const group of matches)for(const id of group.keys)keys.add(id);
+    for(const group of matches)groups.splice(groups.indexOf(group),1);groups.push({rows:members,keys});
+  }
+  const unique=values=>[...new Set(values.filter(Boolean))];
+  return groups.map(group=>{
+    const ordered=group.rows.map((row,index)=>({row,index})).sort((a,b)=>String(a.row.sourceLastAt||'').localeCompare(String(b.row.sourceLastAt||''))||a.index-b.index).map(i=>i.row),latest=ordered.at(-1);
+    const stable=existing.find(row=>ids(row).some(id=>group.keys.has(id)))?.[key]||ordered[0][key];
+    const times=unique(ordered.flatMap(row=>[row.sourceFirstAt,row.sourceLastAt])).sort();
+    const merged={...latest,[key]:stable,[related]:[...group.keys].filter(id=>id!==stable),sourceIds:unique(ordered.flatMap(row=>row.sourceIds||[])),sourceRef:unique(ordered.flatMap(row=>(row.sourceRef||'').split('\n'))).join('\n').slice(0,4000),attachments:[...new Map(ordered.flatMap(row=>row.attachments||[]).map(a=>[JSON.stringify(a),a])).values()].slice(0,30),sourceFirstAt:times[0]||'',sourceLastAt:times.at(-1)||''};
+    if(key==='requirementKey')merged.description=unique(ordered.map(row=>row.description)).join('；').slice(0,2000);
+    if(key==='issueKey'){merged.action=unique(ordered.map(row=>row.action)).join('；').slice(0,800);merged.turnIds=unique(ordered.flatMap(row=>row.turnIds||[]));}
+    if(key==='confirmationKey'){
+      merged.requirementKeys=unique(ordered.flatMap(row=>row.requirementKeys||[]));
+      // Contradictory conclusions with no later evidence must remain open.
+      if(latest.status==='已解决'&&ordered.some(row=>row.status==='待确认'&&(!latest.sourceLastAt||!row.sourceLastAt||row.sourceLastAt===latest.sourceLastAt))){merged.status='待确认';merged.resolution='';}
+    }
+    return merged;
+  });
+}
 function carryover(project, date) {
   const previous = yesterday(date), result = [];
   for (const item of project.records || []) if (item.date === previous && ['进行中','未解决','待验证'].includes(item.status)) {
@@ -129,14 +156,14 @@ class DailyDesk {
     }
     const input={date,project:p.name,sources,previousOverview:previous,previousItems:previousItems.slice(-20).map(priorContext),
       materialReferences,
-      requirements:(p.requirements || []).slice(-60).map(i=>({requirementKey:i.requirementKey,title:i.title,description:clean(i.description,120)})),
-      confirmations:(p.requirementConfirmations || []).slice(-40).map(i=>({confirmationKey:i.confirmationKey,scenario:clean(i.scenario,120),question:clean(i.question,100),workaround:clean(i.workaround,100),status:i.status})),carryover:carryover(p,date)};
-    const schema='输出 JSON：{overview:{scene:"业务场景",requirements:"主要要求",progress:"已实现/正在处理",nextAction:"下一步",blocker:"阻塞"},items:[{issueKey,title,cause,action,result,status:"已完成|进行中|未解决|待验证",sourceIds:["本次来源编号"],relatedIssueKeys:[]}],requirements:[{requirementKey,title,description,status:"已明确|待确认",sourceIds:[],relatedRequirementKeys:[]}],confirmations:[{confirmationKey,scenario,question,workaround,status:"待确认|已解决",resolution,sourceIds:[]}],materialTags:[{targetId,turnId,evidence:"与 materialReferences 完全相同的用户介绍",labels:["标签"]}],reportText:"简短 Markdown 日报"}。materialTags可为空，仅引用materialReferences的目标与用户原话，标签须原话出现或引用已验证分类，不能根据Codex答复、正文、文件名推断；不要把工作任务名当成资料用途。items、requirements和confirmations只返回本次新增或更新事项；未涉及的旧事项由程序原样保留，不要重复输出。延续旧工作时沿用issueKey或relatedIssueKeys，概括关联处理和最新结果，旧真实来源与附件由程序合回。每个新增或更新事项至少逐字引用sources中一个本次来源id，不使用文件名、路径、数字序号或自造编号代替。previousItems的来源只代表已整理上下文，不能单独证明新的变化。reportText按项目简短概括当天全部有效工作，包括previousItems的已有成果，不逐轮重复；当天没有工作可为空。';
+      requirements:(p.requirements || []).slice(-60).map(i=>({requirementKey:i.requirementKey,title:i.title,description:clean(i.description,120),relatedRequirementKeys:i.relatedRequirementKeys||[]})),
+      confirmations:(p.requirementConfirmations || []).slice(-40).map(i=>({confirmationKey:i.confirmationKey,scenario:clean(i.scenario,120),question:clean(i.question,100),workaround:clean(i.workaround,100),status:i.status,relatedConfirmationKeys:i.relatedConfirmationKeys||[]})),carryover:carryover(p,date)};
+    const schema='输出 JSON：{overview:{scene:"业务场景",requirements:"主要要求",progress:"已实现/正在处理",nextAction:"下一步",blocker:"阻塞"},items:[{issueKey,title,cause,action,result,status:"已完成|进行中|未解决|待验证",sourceIds:["本次来源编号"],relatedIssueKeys:[]}],requirements:[{requirementKey,title,description,status:"已明确|待确认",sourceIds:[],relatedRequirementKeys:[]}],confirmations:[{confirmationKey,scenario,question,workaround,status:"待确认|已解决",resolution,sourceIds:[],relatedConfirmationKeys:[],requirementKeys:[]}],materialTags:[{targetId,turnId,evidence:"与 materialReferences 完全相同的用户介绍",labels:["标签"]}],reportText:"简短 Markdown 日报"}。materialTags可为空，仅引用materialReferences的目标与用户原话，标签须原话出现或引用已验证分类，不能根据Codex答复、正文、文件名推断；不要把工作任务名当成资料用途。items、requirements和confirmations只返回本次新增或更新事项；未涉及的旧事项由程序原样保留，不要重复输出。同一编号只输出一次，relatedIssueKeys、relatedRequirementKeys、relatedConfirmationKeys不能包含本项自身编号；同一业务多轮修改合成一项，已有编号或别名沿用，不按每轮问答拆条。延续旧工作时沿用issueKey或relatedIssueKeys，概括关联处理和最新结果，旧真实来源与附件由程序合回。每个新增或更新事项至少逐字引用sources中一个本次来源id，不使用文件名、路径、数字序号或自造编号代替。previousItems的来源只代表已整理上下文，不能单独证明新的变化。reportText按项目简短概括当天全部有效工作，包括previousItems的已有成果，不逐轮重复；当天没有工作可为空。';
     await this.commit(()=>{this.store.saveDailyDesk(id,date,{status:'running',message:'正在整理当前日期的新增内容'});this.notify({dailyUpdated:id});});
     try {
       const output=await this.request(config,apiKey,[{role:'system',content:clean(this.getRules(),12000)+'\n以下为本次 FDE 简洁输出的优先约束：\n'+fs.readFileSync(path.join(__dirname,'daily-desk-rules.md'),'utf8')+presetPrompt(this.store.getState().settings.summaryPreset)+'\n'+schema},{role:'user',content:JSON.stringify(input)}],undefined,{maxTokens:4500});
       if(this.stopped || this.project(id)?.codex?.threadId!==threadId || this.project(id)?.sourceDir!==p.sourceDir || this.project(id)?.devDir!==p.devDir) throw new Error('项目关联已改变，已忽略旧整理结果');
-      const result=validate(output,sources,previousItems);
+      const result=validate(output,sources,previousItems,{requirements:p.requirements,confirmations:p.requirementConfirmations});
       const materialTags=validateModelTags(output.materialTags,input.materialReferences);
       await this.commit(()=>{
         if(this.stopped || this.project(id)?.codex?.threadId!==threadId) throw new Error('会话已变化');
@@ -157,7 +184,7 @@ class DailyDesk {
   }
   stop(){this.stopped=true;}
 }
-function validate(output,sources,previousItems=[]) {
+function validate(output,sources,previousItems=[],existing={}) {
   if(!output || typeof output!=='object' || !output.overview || typeof output.overview!=='object' || typeof output.reportText!=='string' || output.reportText.length>5000) throw new Error('整理结果格式无效，原记录保留');
   const allowed=new Map(sources.map(s=>[s.id,s]));
   const list=(key,max=40)=>{if(!Array.isArray(output[key]) || output[key].length>max)throw new Error('整理清单格式无效');return output[key];};
@@ -179,11 +206,11 @@ function validate(output,sources,previousItems=[]) {
     const origin=evidence(i,prior);
     return {...origin,issueKey,title:field(i.title,160,true),cause:field(i.cause || '',400),action:field(i.action || '',800),result:field(i.result || '',600),status:['已完成','进行中','未解决','待验证'].includes(i.status)?i.status:'进行中',relatedIssueKeys,turnIds:origin.sourceIds.filter(id=>id.startsWith('turn:')).map(id=>id.slice(5))};
   });
-  const identities=new Set(items.flatMap(i=>[i.issueKey,...i.relatedIssueKeys]));
+  const identities=new Set(items.flatMap(i=>[i.issueKey,...(i.relatedIssueKeys||[])]));
   for(const prior of previousItems)if(![prior.issueKey,...(prior.relatedIssueKeys || [])].some(key=>identities.has(key)))items.push(prior);
   const requirements=list('requirements').map(i=>({...evidence(i),requirementKey:field(i.requirementKey,100,true),title:field(i.title,160,true),description:field(i.description || '',1000),status:i.status==='待确认'?'待确认':'已明确',questions:[],relatedRequirementKeys:keys(i.relatedRequirementKeys)}));
-  const confirmations=list('confirmations').map(i=>({...evidence(i),confirmationKey:field(i.confirmationKey,100,true),scenario:field(i.scenario,400,true),question:field(i.question,600,true),workaround:field(i.workaround || '',600),status:i.status==='已解决'?'已解决':'待确认',resolution:field(i.resolution || '',600),relatedConfirmationKeys:[],requirementKeys:[]}));
+  const confirmations=list('confirmations').map(i=>({...evidence(i),confirmationKey:field(i.confirmationKey,100,true),scenario:field(i.scenario,400,true),question:field(i.question,600,true),workaround:field(i.workaround || '',600),status:i.status==='已解决'?'已解决':'待确认',resolution:field(i.resolution || '',600),relatedConfirmationKeys:keys(i.relatedConfirmationKeys),requirementKeys:keys(i.requirementKeys)}));
   if(confirmations.some(i=>i.status==='已解决'&&!i.resolution))throw new Error('确认结果缺少结论');
-  return {items,requirements,confirmations,overview:Object.fromEntries(['scene','requirements','progress','nextAction','blocker'].map(key=>[key,field(output.overview[key] || '',600)])),reportText:field(output.reportText,5000)};
+  return {items:mergeLinked(items,'issueKey','relatedIssueKeys',previousItems),requirements:mergeLinked(requirements,'requirementKey','relatedRequirementKeys',existing.requirements),confirmations:mergeLinked(confirmations,'confirmationKey','relatedConfirmationKeys',existing.confirmations),overview:Object.fromEntries(['scene','requirements','progress','nextAction','blocker'].map(key=>[key,field(output.overview[key] || '',600)])),reportText:field(output.reportText,5000)};
 }
 module.exports={DailyDesk,localDate,yesterday,carryover,validate};

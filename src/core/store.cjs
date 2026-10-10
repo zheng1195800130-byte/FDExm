@@ -158,8 +158,8 @@ function requirementAnalysisPatch(input = {}) {
   }
   return output;
 }
-function requirementKeys(item) { return [item.requirementKey,...(item.relatedRequirementKeys || [])].filter(Boolean); }
-function confirmationKeys(item) { return [item.confirmationKey,...(item.relatedConfirmationKeys || [])].filter(Boolean); }
+function requirementKeys(item) { return [...new Set([item.requirementKey,...(item.relatedRequirementKeys || [])].filter(Boolean))]; }
+function confirmationKeys(item) { return [...new Set([item.confirmationKey,...(item.relatedConfirmationKeys || [])].filter(Boolean))]; }
 function confirmationDeletionItem(item) { return { ...item, requirementKey: item.confirmationKey, relatedRequirementKeys: item.relatedConfirmationKeys || [], title: item.scenario }; }
 function normalizeConfirmation(input) {
   if (!input || !['待确认','已解决'].includes(input.status)) throw new Error('需求确认状态无效');

@@ -62,6 +62,27 @@ test('只有旧证据的修改、挪用其他事项证据或虚构来源仍拒�
 test('相关新工作仅引用本次证据也自动保留已关联旧来源',()=>{
  const result=validate(incrementalOutput([{...oldWork,issueKey:'bill-complete',relatedIssueKeys:['bill'],result:'接通 ERP',sourceIds:['turn:new']}]),[newSource],[oldWork]);assert.equal(result.items.length,1);assert.deepEqual(result.items[0].turnIds,['new','old']);assert.deepEqual(result.items[0].attachments,[...oldWork.attachments,...newSource.attachments]);
 });
+
+test('同一需求重复编号、自身关联和重复来源在本地归并，一次请求可完整提交',async t=>{
+ const f=await fixture(t),id=f.projects[0].id,request=f.service.request;
+ f.service.request=async(...args)=>{const output=await request(...args),first=output.requirements[0];output.requirements=[{...first,relatedRequirementKeys:[first.requirementKey,first.requirementKey]},{...first,description:'补充支持客户模板'}];output.items.push({...output.items[0],relatedIssueKeys:['bill'],action:'补充字段校验'});output.confirmations.push({...output.confirmations[0]});return output;};
+ f.add('甲项目','a');await f.service.run(id);const p=f.store.getState().projects[0];assert.equal(p.requirements.length,1);assert.match(p.requirements[0].description,/保留展示编辑；补充支持客户模板/);assert.equal(p.records.length,1);assert.match(p.records[0].action,/补充字段校验/);assert.equal(p.requirementConfirmations.length,1);assert.equal(p.dailyDesk.days['2026-10-10'].status,'ready');assert.equal(f.calls.length,1);assert.equal((await f.service.run(id)).skipped,true);
+});
+test('明确关联与已有别名按稳定编号归并，保留不同证据和日期',()=>{
+ const requirement=(key,source,extra={})=>({requirementKey:key,title:'规则管理',description:key,status:'已明确',sourceIds:[source],...extra});
+ const output={...incrementalOutput([]),requirements:[requirement('old-alias','turn:one'),requirement('updated','turn:two',{relatedRequirementKeys:['stable']})]};
+ const sources=[{id:'turn:one',timestamp:'2026-10-10T01:00:00Z',sourceRef:'first'},{id:'turn:two',timestamp:'2026-10-10T02:00:00Z',sourceRef:'second'}];
+ const result=validate(output,sources,[],{requirements:[{requirementKey:'stable',relatedRequirementKeys:['old-alias']}]});assert.equal(result.requirements.length,1);assert.equal(result.requirements[0].requirementKey,'stable');assert.deepEqual(result.requirements[0].sourceIds,['turn:one','turn:two']);assert.deepEqual(result.requirements[0].relatedRequirementKeys.sort(),['old-alias','updated']);assert.equal(result.requirements[0].sourceFirstAt,sources[0].timestamp);assert.equal(result.requirements[0].sourceLastAt,sources[1].timestamp);
+});
+test('同标题和同来源不足以归并独立需求，未知来源不能被重复项掩盖',()=>{
+ const first={requirementKey:'air',title:'账单导出',description:'空运',sourceIds:['turn:new'],status:'已明确'},second={...first,requirementKey:'sea',description:'海运'};
+ const output={...incrementalOutput([]),requirements:[first,second]};assert.equal(validate(output,[newSource]).requirements.length,2);
+ output.requirements.push({...first,sourceIds:['invented']});assert.throws(()=>validate(output,[newSource]),/来源无效/);
+});
+test('重复确认事项无后续证据却有冲突结论时保持待确认',()=>{
+ const first={confirmationKey:'bill',scenario:'提单来源',question:'哪里获取',workaround:'表格导入',status:'待确认',sourceIds:['turn:new']};
+ const output={...incrementalOutput([]),confirmations:[first,{...first,status:'已解决',resolution:'ERP 获取'}]};const result=validate(output,[newSource]);assert.equal(result.confirmations.length,1);assert.equal(result.confirmations[0].status,'待确认');assert.equal(result.confirmations[0].resolution,'');
+});
 test('长日只单个有界请求，剩余内容留待下一批，不把历史混入',async t=>{const f=await fixture(t);for(let i=0;i<20;i++)f.add('甲项目',`t${i}`,'2026-10-10','客户需求'.repeat(1000));const result=await f.service.run(f.projects[0].id);assert.equal(f.calls.length,1);assert.ok(result.pending>0);assert.ok(result.partial);assert.ok(f.calls[0].sources.reduce((n,s)=>n+s.text.length,0)<=18000);});
 test('来源资料仅提交新增简短摘录，重复操作不重发',async t=>{const f=await fixture(t),p=f.projects[0];fs.writeFileSync(path.join(p.sourceDir,'要求.md'),'业务要求'.repeat(2000));await f.store.scanProject(p.id);await f.service.run(p.id);assert.ok(f.calls[0].sources[0].text.length<=1800);assert.ok(!f.calls[0].sources.some(s=>s.sourceRef.startsWith(p.devDir)));await f.service.run(p.id);assert.equal(f.calls.length,1);});
 test('手改工作记录与需求仍受已有保护合并契约保护',async t=>{const f=await fixture(t),id=f.projects[0].id;f.add('甲项目','a');await f.service.run(id);let p=f.store.getState().projects[0];f.store.upsertRecord(id,{...p.records[0],result:'人工改过的结果',confirmed:true});f.add('甲项目','b');await f.service.run(id);p=f.store.getState().projects[0];assert.equal(p.records[0].result,'人工改过的结果');});
