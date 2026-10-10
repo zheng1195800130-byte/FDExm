@@ -82,6 +82,17 @@ function gatherXmlText(node, out) {
   }
 }
 
+function wordText(xml) {
+  const {XMLParser}=require('fast-xml-parser');
+  const nodes=new XMLParser({preserveOrder:true,ignoreAttributes:true,trimValues:false,parseTagValue:false}).parse(xml),out=[];
+  const visit=(nodes,inText=false)=>{for(const node of nodes || [])for(const [tag,value] of Object.entries(node)){
+    if(tag==='#text'){if(inText)out.push(String(value));continue;}
+    if(tag==='w:tab')out.push('\t');else if(tag==='w:br')out.push('\n');else if(Array.isArray(value))visit(value,inText||tag==='w:t');
+    if(tag==='w:p'||tag==='w:tr')out.push('\n');else if(tag==='w:tc')out.push('\t');
+  }};
+  visit(nodes);return out.join('').replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
+}
+
 function arrayOf(value) { return value == null ? [] : Array.isArray(value) ? value : [value]; }
 function xmlValue(value) { return value && typeof value === 'object' ? String(value['#text'] ?? '') : String(value ?? ''); }
 function spreadsheetText(parsed, sharedStrings) {
@@ -142,6 +153,11 @@ async function extractText(filePath, stat) {
       const parts = [];
       let sharedStrings = [];
       for (const entry of entries) {
+        if(ext==='.docx'){
+          const body=wordText(entry.getData().toString('utf8'));
+          if(body)parts.push(`[${entry.entryName}]\n${body}`);
+          continue;
+        }
         const parsed = parser.parse(entry.getData().toString('utf8'));
         if (ext === '.xlsx' && entry.entryName === 'xl/sharedStrings.xml') {
           sharedStrings = arrayOf(parsed.sst?.si).map(item => { const strings = []; gatherXmlText(item, strings); return strings.join(''); });
@@ -171,7 +187,8 @@ async function extractText(filePath, stat) {
 async function inspectFile(filePath, kind, old = null, { force = false } = {}) {
   const stat = await fsp.lstat(filePath);
   if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('只支持普通文件，不能导入符号链接或目录');
-  const unchanged = !force && old && old.size === stat.size && old.mtime === stat.mtime.toISOString();
+  const isWord=path.extname(filePath).toLowerCase()==='.docx';
+  const unchanged = !force && old && old.size === stat.size && old.mtime === stat.mtime.toISOString() && (!isWord||old.extractionVersion===2);
   const extraction = unchanged ? { text: old.textPreview || '', type: old.type, note: old.previewNote, error: old.parseError } : await extractText(filePath, stat);
   const userDescription = old && (old.descriptionSource === 'user' || (!old.descriptionSource && old.description));
   return {
@@ -179,6 +196,7 @@ async function inspectFile(filePath, kind, old = null, { force = false } = {}) {
     description: userDescription ? old.description : defaultDescription(filePath, extraction), descriptionSource: userDescription ? 'user' : 'automatic', textPreview: extraction.text || '', ext: path.extname(filePath).toLowerCase(),
     size: stat.size, mtime: stat.mtime.toISOString(), missing: false, type: extraction.type,
     previewNote: extraction.note || '', parseError: extraction.error || '',
+    ...(isWord?{extractionVersion:2}:{}),
   };
 }
 

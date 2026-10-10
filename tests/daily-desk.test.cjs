@@ -2,6 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {Store}=require('../src/core/store.cjs');
 const {DailyDesk,localDate,carryover,validate}=require('../src/core/daily-desk.cjs');
+const {conversationText,fileEvidence}=require('../src/core/daily-evidence.cjs');
 async function fixture(t){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'fde-daily-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
  const store=new Store(path.join(dir,'data'));const projects=[];
@@ -84,7 +85,29 @@ test('重复确认事项无后续证据却有冲突结论时保持待确认',()=
  const output={...incrementalOutput([]),confirmations:[first,{...first,status:'已解决',resolution:'ERP 获取'}]};const result=validate(output,[newSource]);assert.equal(result.confirmations.length,1);assert.equal(result.confirmations[0].status,'待确认');assert.equal(result.confirmations[0].resolution,'');
 });
 test('长日只单个有界请求，剩余内容留待下一批，不把历史混入',async t=>{const f=await fixture(t);for(let i=0;i<20;i++)f.add('甲项目',`t${i}`,'2026-10-10','客户需求'.repeat(1000));const result=await f.service.run(f.projects[0].id);assert.equal(f.calls.length,1);assert.ok(result.pending>0);assert.ok(result.partial);assert.ok(f.calls[0].sources.reduce((n,s)=>n+s.text.length,0)<=18000);});
-test('来源资料仅提交新增简短摘录，重复操作不重发',async t=>{const f=await fixture(t),p=f.projects[0];fs.writeFileSync(path.join(p.sourceDir,'要求.md'),'业务要求'.repeat(2000));await f.store.scanProject(p.id);await f.service.run(p.id);assert.ok(f.calls[0].sources[0].text.length<=1800);assert.ok(!f.calls[0].sources.some(s=>s.sourceRef.startsWith(p.devDir)));await f.service.run(p.id);assert.equal(f.calls.length,1);});
+test('来源资料分段完整提交，重复操作不重发',async t=>{const f=await fixture(t),p=f.projects[0];fs.writeFileSync(path.join(p.sourceDir,'要求.md'),'业务要求'.repeat(2000));await f.store.scanProject(p.id);await f.service.run(p.id);assert.ok(f.calls[0].sources[0].text.length<=3600);assert.equal(f.calls[0].sources.map(s=>s.text).join(''),'业务要求'.repeat(2000));assert.ok(!f.calls[0].sources.some(s=>s.sourceRef.startsWith(p.devDir)));await f.service.run(p.id);assert.equal(f.calls.length,1);});
+
+test('超长证据续读尾部，预算不足不提前完成检查点，刷新保留待整理数',async t=>{
+ const f=await fixture(t),p=f.projects[0],text='业务要求'.repeat(6000)+'最后问题必须保留';fs.writeFileSync(path.join(p.sourceDir,'长资料.md'),text);await f.store.scanProject(p.id);
+ const first=await f.service.run(p.id);assert.ok(first.pending>0);assert.equal(f.calls.length,1);const after=f.store.getState().projects[0];assert.equal(Object.keys(after.dailyDesk.fileCheckpoints).length,0);
+ await f.service.capture(p.id);assert.ok(f.store.getState().projects[0].dailyDesk.days['2026-10-10'].unprocessedCount>0);
+ await f.service.run(p.id);assert.equal(f.calls.length,2);assert.equal(f.calls.flatMap(call=>call.sources).map(s=>s.text).join(''),text);assert.equal((await f.service.run(p.id)).skipped,true);
+});
+
+test('客户确认单按编号保留全部问题，日期只取真实对话引用，漏项拒绝完成',()=>{
+ const file={id:'doc',name:'客户确认单.docx',path:'D:/资料/客户确认单.docx',mtime:'2026-10-10',textPreview:'标题\n01  字段来源\n需确认：备注取哪里？\n客户确认：_____\n02  容量口径\n需确认：50还是100？\n客户确认：_____'};
+ const sources=fileEvidence(file,[{timestamp:'2026-10-10T08:10:00Z',assistantText:'已输出客户确认单.docx'}]);assert.equal(sources.length,2);assert.equal(sources[0].timestamp,'2026-10-10T08:10:00Z');assert.equal(fileEvidence(file)[0].timestamp,undefined);
+ assert.throws(()=>validate(incrementalOutput([]),sources),/未提炼/);
+ const output={...incrementalOutput([]),confirmations:sources.map((s,i)=>({confirmationKey:`question-${i}`,scenario:'业务场景',question:s.text,workaround:'暂沿用现行处理',status:'待确认',sourceIds:[s.id]}))};assert.equal(validate(output,sources).confirmations.length,2);
+ assert.throws(()=>validate({...output,confirmations:[{...output.confirmations[0],sourceIds:sources.map(s=>s.id)}]},sources),/过度合并/);
+});
+
+test('去掉浏览器环境说明，保留其后的真实请求与业务内容',()=>{assert.equal(conversationText('<in-app-browser-context source="ambient-ui-state">说明</in-app-browser-context>\n## My request:\n按模板重排，已完成待测试'),'## My request:\n按模板重排，已完成待测试');});
+
+test('本地核对的日报不伪装成模型新结果，汇总继续使用同一正文',async t=>{
+ const f=await fixture(t),id=f.projects[0].id;f.add('甲项目','a');await f.service.run(id);const day=f.store.getState().projects[0].dailyDesk.days['2026-10-10'];f.store.saveDailyDesk(id,'2026-10-10',{digest:{...day.digest,method:'local',reportText:'甲项目——按用户提供的日报核对，完成待测试。'}});
+ const report=f.store.generateReport(id,'2026-10-10');assert.equal(report.method,'local');assert.ok(f.store.combinedReport('2026-10-10').text.includes(report.text));assert.equal(f.calls.length,1);
+});
 test('手改工作记录与需求仍受已有保护合并契约保护',async t=>{const f=await fixture(t),id=f.projects[0].id;f.add('甲项目','a');await f.service.run(id);let p=f.store.getState().projects[0];f.store.upsertRecord(id,{...p.records[0],result:'人工改过的结果',confirmed:true});f.add('甲项目','b');await f.service.run(id);p=f.store.getState().projects[0];assert.equal(p.records[0].result,'人工改过的结果');});
 
 test('资料更新只整理需求，不冒充当天工作、不覆盖已完成成果',async t=>{

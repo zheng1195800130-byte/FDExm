@@ -5,6 +5,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const AdmZip = require('adm-zip');
 const { Store } = require('../src/core/store.cjs');
+const {extractText}=require('../src/core/files.cjs');
+
+test('Word 正文与表格保留原顺序，连续文字片段合回同一段落',async t=>{
+ const {sourceDir}=fixture(t),file=path.join(sourceDir,'确认单.docx'),zip=new AdmZip();
+ zip.addFile('word/document.xml',Buffer.from('<w:document xmlns:w="w"><w:body><w:p><w:r><w:t>01  评分</w:t></w:r><w:r><w:t>口径</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>是否百分制？</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>02  验收标准</w:t></w:r></w:p></w:body></w:document>'));zip.writeZip(file);
+ const result=await extractText(file,fs.statSync(file));assert.match(result.text,/01  评分口径/);assert.ok(result.text.indexOf('是否百分制？')<result.text.indexOf('02  验收标准'));
+});
 
 function fixture(t) {
   const base = path.resolve(__dirname, '../.test-tmp'); fs.mkdirSync(base, { recursive: true });

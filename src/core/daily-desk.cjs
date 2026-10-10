@@ -7,6 +7,7 @@ const { groupCompletedTurns } = require('./summarizer.cjs');
 const {targets,collectReferences,validateModelTags} = require('./material-tags.cjs');
 const {presetPrompt} = require('./summary-preset.cjs');
 const {materialOnly,organizedReport}=require('./daily-report.cjs');
+const {conversationText,parts,confirmationPoints,fileEvidence}=require('./daily-evidence.cjs');
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const clean = (value, max = 2000) => String(value || '').replace(/\u0000/g, '').replace(/data:[^\s]+;base64,[a-z0-9+/=\r\n]+/gi, '[媒体内容省略]').replace(/[a-z0-9+/]{512,}={0,2}/gi, '[长编码省略]').trim().slice(0, max);
 const localDate = time => new Date(new Date(time).getTime() + 8 * 3600000).toISOString().slice(0, 10);
@@ -84,7 +85,7 @@ class DailyDesk {
       const turns=[...byId.values()].sort((a,b)=>a.timestamp.localeCompare(b.timestamp));
       const raw={date:day,threadId,turns,partial:!!(read.workTruncated ?? read.truncated) || turns.some(t=>t.shortened)};
       const fingerprint=hash(raw), metadata=this.project(id).dailyDesk?.days?.[day];
-      const unprocessedCount=turns.filter(t=>metadata?.processed?.[t.id] !== hash(t)).length;
+      const unprocessedCount=turns.filter(t=>metadata?.processed?.[t.id] !== hash(t)).length+(metadata?.pendingFiles || 0);
       if (metadata?.fingerprint !== fingerprint || metadata?.unprocessedCount!==unprocessedCount || (day<date && !metadata?.archivedAt)) await this.commit(()=>{
         if (this.stopped || this.project(id)?.codex?.threadId !== threadId) return;
         if (prior.threadId && !same && prior.turns.length) this.store._atomicWrite(path.join(this.store.projectFolder(id),'每日收录','会话归档',hash(prior.threadId).slice(0,16),`${day}.json`),JSON.stringify(prior,null,2));
@@ -130,22 +131,34 @@ class DailyDesk {
     let p=this.project(id); if (!p) throw new Error('项目不存在');
     const {config,apiKey}=this.getModel();
     if (!config.enabled || (requiresApiKey(config) && !apiKey)) throw new Error('请先配置并启用整理模型');
-    const threadId=p.codex?.threadId || '',raw=this.raw(id,date),day=p.dailyDesk?.days?.[date] || {},processed=day.processed || {},fileCheckpoints=p.dailyDesk?.fileCheckpoints || {};
-    const sources=[],pending=[],nextProcessed={...processed},nextFiles={...fileCheckpoints}; let budget=18000,shortened=false;
-    for (const turn of raw.threadId===threadId?raw.turns:[]) {
+    const threadId=p.codex?.threadId || '',raw=this.raw(id,date),day=p.dailyDesk?.days?.[date] || {},processed=day.evidenceVersion===3?day.processed || {}:{},fileCheckpoints=p.dailyDesk?.fileCheckpoints || {};
+    const sources=[],pending=[],nextProcessed={...processed},nextFiles={...fileCheckpoints},nextParts={...(day.evidenceVersion===3?day.sourceCheckpoints || {}:{})}; let budget=18000,shortened=false;
+    const append=(source,fingerprint)=>{
+      const checkpoint=hash([fingerprint,source.text]);
+      if(nextParts[source.id]===checkpoint)return true;
+      if(source.text.length>budget)return false;
+      budget-=source.text.length;sources.push(source);nextParts[source.id]=checkpoint;return true;
+    };
+    // Explicit customer question sheets take priority over large background
+    // directories. Their numbered questions remain independently traceable.
+    const files=sourceFiles(p).sort((a,b)=>Number(confirmationPoints(b).length>0)-Number(confirmationPoints(a).length>0));
+    const appendFile=file=>{
+      const points=confirmationPoints(file),fingerprint=hash([file.path,file.mtime,file.textPreview,file.description,...(points.length?['questions-v3']:[])]);
+      if(fileCheckpoints[file.id]===fingerprint)return;
+      const chunks=fileEvidence(file,raw.turns),complete=chunks.map(source=>append(source,fingerprint)).every(Boolean);
+      if(complete)nextFiles[file.id]=fingerprint;else{delete nextFiles[file.id];pending.push(`file:${file.id}`);}
+    };
+    for(const file of files.filter(file=>confirmationPoints(file).length))appendFile(file);
+    // A large morning discussion must not starve the latest completion or
+    // customer decision. Deferred evidence still has its own next-batch cursor.
+    for (const turn of raw.threadId===threadId?[...raw.turns].reverse():[]) {
       const fingerprint=hash(turn); if (processed[turn.id]===fingerprint) continue;
-      const user=clean(turn.userText,1800),assistant=clean(turn.assistantText,2600),source={id:`turn:${turn.id}`,timestamp:turn.timestamp,text:`用户：${user}\nCodex：${assistant}`,sourceRef:turn.sourceRef,attachments:turn.attachments};
-      if (source.text.length>budget) {pending.push(turn.id);continue;}
-      shortened ||= user.length < turn.userText.length || assistant.length < turn.assistantText.length;
-      budget-=source.text.length;sources.push(source);nextProcessed[turn.id]=fingerprint;
+      const text=`用户：${conversationText(turn.userText)}\nCodex：${turn.assistantText}`;
+      const complete=parts(text).map((text,index)=>append({id:index?`turn:${turn.id}:part:${index+1}`:`turn:${turn.id}`,turnId:turn.id,timestamp:turn.timestamp,text,sourceRef:turn.sourceRef,attachments:turn.attachments},fingerprint)).every(Boolean);
+      if(complete)nextProcessed[turn.id]=fingerprint;else pending.push(turn.id);
     }
-    for (const file of sourceFiles(p)) {
-      const fingerprint=hash([file.path,file.mtime,file.textPreview,file.description]); if (fileCheckpoints[file.id]===fingerprint) continue;
-      const text=clean(file.textPreview || file.description || file.name,1800);
-      if(text.length>budget){pending.push(`file:${file.id}`);continue;}
-      shortened ||= String(file.textPreview || '').length>text.length;
-      budget-=text.length;sources.push({id:`file:${file.id}`,contextOnly:true,text,title:file.name,sourceRef:file.path,attachments:[{path:file.path,description:clean(file.description,160)}]});nextFiles[file.id]=fingerprint;
-    }
+    for(const file of files.filter(file=>!confirmationPoints(file).length))appendFile(file);
+    shortened=pending.length>0;
     if (!sources.length) return {skipped:true,pending:pending.length,message:'没有新增内容，未调用模型'};
     const previous=p.dailyDesk?.overview || {};
     const previousItems=((p.codex?.dailySummaries || []).find(s=>s.date===date)?.items || []).filter(item=>!materialOnly(item));
@@ -162,13 +175,13 @@ class DailyDesk {
     const schema='输出 JSON：{overview:{scene:"业务场景",requirements:"主要要求",progress:"已实现/正在处理",nextAction:"下一步",blocker:"阻塞"},items:[{issueKey,title,cause,action,result,status:"已完成|进行中|未解决|待验证",sourceIds:["本次来源编号"],relatedIssueKeys:[]}],requirements:[{requirementKey,title,description,status:"已明确|待确认",sourceIds:[],relatedRequirementKeys:[]}],confirmations:[{confirmationKey,scenario,question,workaround,status:"待确认|已解决",resolution,sourceIds:[],relatedConfirmationKeys:[],requirementKeys:[]}],materialTags:[{targetId,turnId,evidence:"与 materialReferences 完全相同的用户介绍",labels:["标签"]}],reportText:"简短 Markdown 日报",reportIssueKeys:["日报涵盖的全部当日工作编号"]}。materialTags可为空，仅引用materialReferences的目标与用户原话，标签须原话出现或引用已验证分类，不能根据Codex答复、正文、文件名推断；不要把工作任务名当成资料用途。items、requirements和confirmations只返回本次新增或更新事项；未涉及的旧事项由程序原样保留，不要重复输出。同一编号只输出一次，relatedIssueKeys、relatedRequirementKeys、relatedConfirmationKeys不能包含本项自身编号；同一业务多轮修改合成一项，已有编号或别名沿用，不按每轮问答拆条。延续旧工作时沿用issueKey或relatedIssueKeys，概括关联处理和最新结果，旧真实来源与附件由程序合回。每个新增或更新事项至少逐字引用sources中一个本次来源id，不使用文件名、路径、数字序号或自造编号代替。previousItems的来源只代表已整理上下文，不能单独证明新的变化。contextOnly=true的文件仅用于理解业务与需求，不能当作当天已分析、已开发或已交付的工作；items必须有当天对话证据。reportText只概括当天对话和previousItems的真实工作，不复述资料里的历史业务，不把修改时间当工作日期；reportIssueKeys列出日报涵盖的全部工作编号，包括previousItems；只新增资料时保持已有日报，当天没有工作留空。';
     await this.commit(()=>{this.store.saveDailyDesk(id,date,{status:'running',message:'正在整理当前日期的新增内容'});this.notify({dailyUpdated:id});});
     try {
-      const output=await this.request(config,apiKey,[{role:'system',content:clean(this.getRules(),12000)+'\n以下为本次 FDE 简洁输出的优先约束：\n'+fs.readFileSync(path.join(__dirname,'daily-desk-rules.md'),'utf8')+presetPrompt(this.store.getState().settings.summaryPreset)+'\n'+schema},{role:'user',content:JSON.stringify(input)}],undefined,{maxTokens:4500});
+      const output=await this.request(config,apiKey,[{role:'system',content:clean(this.getRules(),12000)+'\n以下为本次 FDE 简洁输出的优先约束：\n'+fs.readFileSync(path.join(__dirname,'daily-desk-rules.md'),'utf8')+presetPrompt(this.store.getState().settings.summaryPreset)+'\n'+schema},{role:'user',content:JSON.stringify(input)}],undefined,{maxTokens:sources.some(s=>s.confirmationPoint)?9000:4500});
       if(this.stopped || this.project(id)?.codex?.threadId!==threadId || this.project(id)?.sourceDir!==p.sourceDir || this.project(id)?.devDir!==p.devDir) throw new Error('项目关联已改变，已忽略旧整理结果');
       const result=validate(output,sources,previousItems,{requirements:p.requirements,confirmations:p.requirementConfirmations});
       const materialTags=validateModelTags(output.materialTags,input.materialReferences);
       await this.commit(()=>{
         if(this.stopped || this.project(id)?.codex?.threadId!==threadId) throw new Error('会话已变化');
-        this.store.applyDailyDesk(id,{date,threadId,items:result.items,requirements:result.requirements,confirmations:result.confirmations,materialTags,digest:{overview:result.overview,reportText:organizedReport(p.name,result,output,{hasTurns:sources.some(s=>s.id.startsWith('turn:')),previousDigest:day.digest}),workEvidenceVersion:2},processed:nextProcessed,fileCheckpoints:nextFiles,pending:pending.length,partial:!!(raw.partial||shortened),fingerprint:hash(sources)});
+        this.store.applyDailyDesk(id,{date,threadId,items:result.items,requirements:result.requirements,confirmations:result.confirmations,materialTags,digest:{overview:result.overview,reportText:organizedReport(p.name,result,output,{hasTurns:sources.some(s=>s.id.startsWith('turn:')),previousDigest:day.digest}),workEvidenceVersion:2},processed:nextProcessed,fileCheckpoints:nextFiles,sourceCheckpoints:nextParts,evidenceVersion:3,pendingFiles:pending.filter(id=>id.startsWith('file:')).length,pending:pending.length,partial:!!(raw.partial||shortened),fingerprint:hash(sources)});
         this.rollover(id);
         this.notify({dailyUpdated:id});
       });
@@ -206,13 +219,17 @@ function validate(output,sources,previousItems=[],existing={}) {
     if(context&&['title','action','result','status'].every(key=>i[key]===context[key])&&(i.cause===undefined||i.cause===context.cause)&&JSON.stringify(relatedIssueKeys)===JSON.stringify(context.relatedIssueKeys)&&(!i.sourceIds || Array.isArray(i.sourceIds)&&i.sourceIds.every(id=>context.sourceIds.includes(id))) )return exact;
     const origin=evidence(i,prior);
     if(!i.sourceIds.some(id=>allowed.has(id)&&!allowed.get(id).contextOnly))return null;
-    return {...origin,issueKey,title:field(i.title,160,true),cause:field(i.cause || '',400),action:field(i.action || '',800),result:field(i.result || '',600),status:['已完成','进行中','未解决','待验证'].includes(i.status)?i.status:'进行中',relatedIssueKeys,turnIds:origin.sourceIds.filter(id=>id.startsWith('turn:')).map(id=>id.slice(5))};
+    return {...origin,issueKey,title:field(i.title,160,true),cause:field(i.cause || '',400),action:field(i.action || '',800),result:field(i.result || '',600),status:['已完成','进行中','未解决','待验证'].includes(i.status)?i.status:'进行中',relatedIssueKeys,turnIds:[...new Set(origin.sourceIds.filter(id=>id.startsWith('turn:')).map(id=>allowed.get(id)?.turnId || id.slice(5).replace(/:part:\d+$/,'')))]};
   }).filter(Boolean);
   const identities=new Set(items.flatMap(i=>[i.issueKey,...(i.relatedIssueKeys||[])]));
   for(const prior of previousItems)if(![prior.issueKey,...(prior.relatedIssueKeys || [])].some(key=>identities.has(key)))items.push(prior);
   const requirements=list('requirements').map(i=>({...evidence(i),requirementKey:field(i.requirementKey,100,true),title:field(i.title,160,true),description:field(i.description || '',1000),status:i.status==='待确认'?'待确认':'已明确',questions:[],relatedRequirementKeys:keys(i.relatedRequirementKeys)}));
   const confirmations=list('confirmations').map(i=>({...evidence(i),confirmationKey:field(i.confirmationKey,100,true),scenario:field(i.scenario,400,true),question:field(i.question,600,true),workaround:field(i.workaround || '',600),status:i.status==='已解决'?'已解决':'待确认',resolution:field(i.resolution || '',600),relatedConfirmationKeys:keys(i.relatedConfirmationKeys),requirementKeys:keys(i.requirementKeys)}));
   if(confirmations.some(i=>i.status==='已解决'&&!i.resolution))throw new Error('确认结果缺少结论');
-  return {items:mergeLinked(items,'issueKey','relatedIssueKeys',previousItems),requirements:mergeLinked(requirements,'requirementKey','relatedRequirementKeys',existing.requirements),confirmations:mergeLinked(confirmations,'confirmationKey','relatedConfirmationKeys',existing.confirmations),overview:Object.fromEntries(['scene','requirements','progress','nextAction','blocker'].map(key=>[key,field(output.overview[key] || '',600)])),reportText:field(output.reportText,5000)};
+  const points=new Map();for(const source of sources)if(source.confirmationPoint){const ids=points.get(source.confirmationPoint)||[];ids.push(source.id);points.set(source.confirmationPoint,ids);}
+  for(const ids of points.values())if(!confirmations.some(item=>ids.some(id=>item.sourceIds.includes(id))))throw new Error('确认单存在未提炼的问题，原记录保留；请重试整理');
+  const mergedConfirmations=mergeLinked(confirmations,'confirmationKey','relatedConfirmationKeys',existing.confirmations);
+  for(const item of mergedConfirmations)if([...points.values()].filter(ids=>ids.some(id=>item.sourceIds.includes(id))).length>1)throw new Error('确认单不同编号问题被过度合并，原记录保留；请分别整理');
+  return {items:mergeLinked(items,'issueKey','relatedIssueKeys',previousItems),requirements:mergeLinked(requirements,'requirementKey','relatedRequirementKeys',existing.requirements),confirmations:mergedConfirmations,overview:Object.fromEntries(['scene','requirements','progress','nextAction','blocker'].map(key=>[key,field(output.overview[key] || '',600)])),reportText:field(output.reportText,5000)};
 }
 module.exports={DailyDesk,localDate,yesterday,carryover,validate};
