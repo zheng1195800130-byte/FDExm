@@ -165,6 +165,17 @@ async function run() {
     await eventually(async () => (await panel.locator('#memo-save-status').innerText()).includes('已保存'), '自动保存结果没有显示');
     check((await panel.locator('#memo-save-status').innerText()).includes('已保存'), '文字输入自动保存且显示保存结果');
 
+    const markdownText='# 项目备忘\n\n**重点**与 `字段`\n\n- 等待客户回复\n- 补充样例\n\n| 问题 | 状态 |\n| --- | --- |\n| 提单 | 待确认 |\n\n```js\nconst value = 1;\n```\n\n<script>globalThis.__fdeMemoAttack=1</script>\n\n[危险链接](javascript:alert(1))\n\n![外部图片](https://example.invalid/private.png)';
+    await panel.locator('#memo-text').fill(markdownText);
+    await eventually(async()=> (await memo(a.id)).text===markdownText,'Markdown 原文没有保存');
+    const markdownBefore=await memo(a.id);
+    await panel.locator('#memo-mode-preview').click();
+    check(await panel.locator('#memo-preview h1').innerText()==='项目备忘' && await panel.locator('#memo-preview strong').innerText()==='重点' && await panel.locator('#memo-preview li').count()===2 && await panel.locator('#memo-preview table').count()===1 && await panel.locator('#memo-preview pre code').innerText()==='const value = 1;\n','悬浮框 Markdown 预览展示标题、粗体、列表、表格与代码块');
+    check(await panel.locator('#memo-preview script,#memo-preview img,#memo-preview a[href^="javascript:"]').count()===0 && await panel.evaluate(()=>globalThis.__fdeMemoAttack)===undefined,'Markdown 预览过滤脚本和危险链接，不自动加载外部图片');
+    check(await panel.locator('#memo-text').isHidden() && await panel.locator('#memo-preview').isVisible() && JSON.stringify(await memo(a.id))===JSON.stringify(markdownBefore),'切换预览只改变显示，不修改原文或保存版本');
+    await panel.locator('#memo-mode-edit').click();
+    check(await panel.locator('#memo-text').inputValue()===markdownText && await panel.locator('#memo-preview').isHidden(),'切回编辑完整保留 Markdown 原文');
+
     const plainText = `${initialText}\n<script>globalThis.__fdeMemoAttack=1</script><img src=x onerror="globalThis.__fdeMemoAttack=2">`;
     await panel.locator('#memo-text').fill(plainText);
     await eventually(async () => (await memo(a.id)).text === plainText, '纯文本样例没有保存');
@@ -237,7 +248,7 @@ async function run() {
     try { await request('memo:preview', { id: b.id, imageId: firstImage.id }); } catch { crossProjectRejected = true; }
     check(crossProjectRejected, '图片编号不能跨项目读取');
 
-    const collapsedText = `${pastedButtonText}\n收起前立即保存的备注。`;
+    let collapsedText = `${pastedButtonText}\n收起前立即保存的备注。`;
     await panel.locator('#memo-text').fill(collapsedText); await panel.locator('#collapse').click();
     await eventually(async () => (await memo(a.id)).text === collapsedText, '收起悬浮窗未立即保存');
     await eventually(async () => await app.evaluate(({ BrowserWindow }) => !BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/float.html')).isVisible()), '保存后悬浮窗没有收起');
@@ -250,6 +261,79 @@ async function run() {
     check(!projectA.files.some(file => path.resolve(file.path).startsWith(`${path.resolve(dataDir)}${path.sep}`)) && projectA.records.length === 0 && projectA.requirements.length === 0 && projectA.reports.length === 0, '备忘录不会自动混入资料索引、工作记录、需求或日报');
     await showMemo();
     await eventually(async () => await panel.locator('#memo-text').inputValue() === collapsedText && await panel.locator('.memo-image-card').count() === 2, '收起后笔记回读错误');
+    // Exercise the actual expanded window with the same isolated memo and images.
+    collapsedText += '\n扩大前尚未等待自动保存的文字。';
+    await panel.locator('#memo-text').fill(collapsedText);
+    await panel.locator('#memo-expand').click();
+    let expanded;
+    await eventually(async () => { expanded=app.windows().find(window=>window.url().endsWith('/memo.html'));return !!expanded && !(await expanded.locator('#memo-text').isDisabled()); }, '独立备忘录窗口没有就绪');
+    expanded.on('pageerror',error=>errors.push(error.message));
+    expanded.on('request',pending=>{if(/^https?:/i.test(pending.url()))imageNetworkRequests.push(pending.url());});
+    check(await expanded.locator('#memo-text').inputValue()===collapsedText && (await memo(a.id)).text===collapsedText,'扩大前立即保存最新文字，大窗口回读同一项目内容');
+    check(await expanded.locator('#memo-project-name').innerText()===a.name && await expanded.locator('.memo-image-card').count()===2,'大窗口展示对应项目名和原有图片');
+    check(await expanded.locator('#float-project,.sidebar,.float-tabs,.float-footer').count()===0,'大窗口只展示备忘录，没有资料检索或工作台菜单');
+    const sizes=await app.evaluate(({BrowserWindow,screen})=>{
+      const main=BrowserWindow.getAllWindows().find(w=>w.webContents.getURL().endsWith('/index.html'));
+      const win=BrowserWindow.getAllWindows().find(w=>w.webContents.getURL().endsWith('/memo.html'));
+      const bounds=main.getBounds(),area=screen.getDisplayMatching(bounds).workArea;
+      return {actual:win.getBounds(),expected:{width:Math.min(bounds.width,area.width),height:Math.min(bounds.height,area.height)},resizable:win.isResizable(),panelHidden:!BrowserWindow.getAllWindows().find(w=>w.webContents.getURL().endsWith('/float.html')).isVisible()};
+    });
+    check(Math.abs(sizes.actual.width-sizes.expected.width)<=16 && Math.abs(sizes.actual.height-sizes.expected.height)<=16 && sizes.resizable && sizes.panelHidden,`大窗口与工作台大小相近，可调整大小，悬浮框已收起 ${JSON.stringify(sizes)}`);
+    await request('window:memo-open',{id:a.id});
+    check(await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().filter(w=>w.webContents.getURL().endsWith('/memo.html')).length)===1,'重复扩大同一项目聚焦已有窗口');
+    await request('project:select',{id:b.id});await pause(250);
+    check(await expanded.locator('#memo-project-name').innerText()===a.name && await expanded.locator('#memo-text').inputValue()===collapsedText,'其他窗口切换项目不改变已打开备忘录的归属');
+    check(await expanded.locator('#memo-text').evaluate((editor,base64)=>{
+      const data=new DataTransfer();data.items.add(new File([Uint8Array.from(atob(base64),c=>c.charCodeAt(0))],'大窗口截图.png',{type:'image/png'}));
+      const event=new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true});editor.dispatchEvent(event);return event.defaultPrevented;
+    },pngBase64),'大窗口支持 Ctrl+V 粘贴截图');
+    await eventually(async()=> (await memo(a.id)).images.length===3 && await expanded.locator('.memo-image-card').count()===3,'大窗口截图未持久保存');
+    const expandedImage=(await memo(a.id)).images.at(-1);
+    await expanded.locator(`[data-memo-action="remove-image"][data-image="${expandedImage.id}"]`).click();
+    await eventually(async()=> (await memo(a.id)).images.length===2,'大窗口图片移除失败');
+    check((await memo(b.id)).text===textB && (await memo(b.id)).images.length===0,'扩大窗口的文字图片操作不影响另一个项目');
+    check(await expanded.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth+1 && document.getElementById('memo-text').getBoundingClientRect().height>300),'大窗口无水平溢出，文字区充分展开');
+    await expanded.locator('#memo-mode-preview').click();
+    check(await expanded.locator('#memo-preview').isVisible() && (await expanded.locator('#memo-preview').textContent()).trim()===collapsedText && await expanded.locator('#memo-text').isHidden(),'扩大窗口同样支持 Markdown 预览，正文与已保存内容一致');
+    await expanded.locator('#memo-mode-edit').click();
+    const localDraft=collapsedText+'\n本窗口尚未保存的草稿。',otherWindowText=collapsedText+'\n另一窗口先保存的内容。';
+    await expanded.locator('#memo-text').fill(localDraft);
+    const beforeConcurrent=await memo(a.id);
+    await request('memo:save',{id:a.id,text:otherWindowText,expectedRevision:beforeConcurrent.revision});
+    await eventually(async()=>await expanded.locator('#memo-save-status').innerText().then(text=>text.includes('其他窗口更新')),'同时编辑没有显示冲突');
+    await pause(800);
+    check((await memo(a.id)).text===otherWindowText && await expanded.locator('#memo-text').inputValue()===localDraft,'两个窗口同时编辑时保留当前草稿，自动保存不覆盖另一窗口的新内容');
+    collapsedText=otherWindowText+'\n核对后合并本窗口草稿。';
+    await expanded.locator('#memo-text').fill(collapsedText);
+    await expanded.locator('#memo-retry').click();
+    await eventually(async()=> (await memo(a.id)).text===collapsedText,'核对冲突后无法保存');
+    check((await memo(a.id)).text===collapsedText,'冲突核对后点击重试保存合并内容');
+    await expanded.screenshot({path:path.join(output,PORTABLE?'21-扩大备忘录-便携版.png':'21-扩大备忘录-源码.png')});
+    await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().find(w=>w.webContents.getURL().endsWith('/memo.html')).setSize(640,480));await pause(100);
+    check(await expanded.evaluate(()=>{const editor=document.getElementById('memo-text').getBoundingClientRect(),images=document.getElementById('memo-images').getBoundingClientRect();return document.documentElement.scrollWidth<=document.documentElement.clientWidth+1 && editor.height>=100 && images.bottom<=innerHeight;}),'缩小至 640×480 后文字和图片仍完整可用');
+    collapsedText+='\n大窗口新增内容，返回时立即保存。';
+    await expanded.locator('#memo-text').fill(collapsedText);
+    await expanded.locator('#memo-collapse').click();
+    await eventually(async()=>expanded.isClosed() && await panel.locator('#float-project').inputValue()===a.id && await panel.locator('#memo-text').inputValue()===collapsedText,'返回悬浮框没有回读大窗口最新内容');
+    check((await memo(a.id)).text===collapsedText && await panel.locator('#float-tab-memo').getAttribute('aria-selected')==='true','返回悬浮框保存文字并恢复对应项目备忘录页');
+    await panel.locator('#memo-mode-preview').click();
+    await panel.locator('#memo-expand').click();
+    await eventually(async()=>{expanded=app.windows().find(w=>w.url().endsWith('/memo.html'));return !!expanded && !(await expanded.locator('#memo-text').isDisabled());},'再次扩大失败');
+    expanded.on('pageerror',error=>errors.push(error.message));
+    check(await expanded.locator('#memo-preview').isVisible() && await expanded.locator('#memo-mode-preview').getAttribute('aria-pressed')==='true','从预览模式扩大后继续展示 Markdown 预览');
+    await expanded.locator('#memo-mode-edit').click();
+    await panel.locator('#memo-mode-edit').evaluate(button=>button.click());
+    await app.evaluate(({app})=>{const load=process.mainModule.require.bind(process.mainModule);const {MemoStore}=load(load('node:path').join(app.getAppPath(),'src/core/memos.cjs'));globalThis.__memoSaveOriginal=MemoStore.prototype.save;MemoStore.prototype.save=function(){throw new Error('隔离模拟：扩大窗口保存失败');};});
+    collapsedText+='\n保存失败仍保留的扩大窗口草稿。';
+    await expanded.locator('#memo-text').fill(collapsedText);
+    await expanded.locator('#memo-collapse').click();
+    await eventually(async()=>await expanded.locator('#memo-retry').isVisible(),'扩大窗口保存失败没有重试入口');
+    check(!expanded.isClosed() && await expanded.locator('#memo-text').inputValue()===collapsedText,'保存失败阻止关闭大窗口并保留最新草稿');
+    await app.evaluate(({app})=>{const load=process.mainModule.require.bind(process.mainModule);load(load('node:path').join(app.getAppPath(),'src/core/memos.cjs')).MemoStore.prototype.save=globalThis.__memoSaveOriginal;});
+    // Native title-bar close also waits for persistence.
+    await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().find(w=>w.webContents.getURL().endsWith('/memo.html')).close());
+    await eventually(async()=>expanded.isClosed() && await panel.locator('#memo-text').inputValue()===collapsedText,'原生关闭未保存并返回悬浮框');
+    check((await memo(a.id)).text===collapsedText && (await memo(a.id)).images.length===2,'标题栏关闭保存最新文字，原有图片保留');
     const memoBeforeRestart = await memo(a.id), memoB = await memo(b.id), boundaries = await control();
     await app.close(); app = null;
     await launch(); await showMemo();

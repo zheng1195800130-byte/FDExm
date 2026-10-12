@@ -1,0 +1,25 @@
+.memo-window-body{margin:0;height:100vh;overflow:hidden;background:#fafcf8}
+.memo-window{height:100%;padding:24px 28px;display:flex;flex-direction:column;gap:16px;min-width:0}
+.memo-window-header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex:none}
+.memo-window-heading{display:flex;align-items:baseline;gap:16px;min-width:0}
+.memo-window-heading h1{font-size:24px;line-height:1.4;margin:0;flex:none}
+#memo-project-name{font-size:14px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#memo-collapse{flex:none}
+.memo-window .memo-toolbar .btn{font-size:13px;min-height:36px;padding:6px 14px}
+.memo-window-content{display:grid;grid-template-columns:minmax(0,1fr) minmax(240px,30%);gap:24px;flex:1;min-height:0}
+.memo-text-column{display:flex;flex-direction:column;gap:8px;min-height:0;min-width:0}
+.memo-window .memo-editor{font-size:15px;line-height:1.85;padding:18px 20px}
+.memo-window .memo-preview{font-size:15px;line-height:1.85;padding:18px 20px}
+.memo-window .memo-editor-label{font-size:12px}
+.memo-window .memo-status-line{font-size:12px;min-height:22px}
+.memo-image-column{display:flex;flex-direction:column;min-height:0;border-left:1px solid #dce6d8;padding-left:24px}
+.memo-image-column h2{font-size:14px;font-weight:500;margin:0 0 12px;color:#5c755e}
+.memo-window .memo-images{display:flex;flex-direction:column;max-height:none;flex:1;padding:0 4px 8px 0}
+.memo-window .memo-image-card{flex:none;padding:12px}
+.memo-window .memo-image-preview,.memo-window .memo-image-placeholder{height:180px}
+.memo-window .memo-image-name{font-size:12px}
+.memo-window .memo-image-empty{padding:24px 0}
+.memo-window .memo-image-actions .btn{font-size:12px;min-height:30px;padding:4px 8px}
+.memo-window-body :focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.memo-window-body .toast{max-width:90%;bottom:28px}
+@media(max-width:760px){.memo-window{padding:16px;gap:12px}.memo-window-content{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(120px,1fr) minmax(100px,30%);gap:12px}.memo-image-column{border-left:0;border-top:1px solid #dce6d8;padding:10px 0 0}.memo-image-column h2{margin-bottom:6px}.memo-window .memo-images{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.memo-window .memo-image-preview,.memo-window .memo-image-placeholder{height:90px}.memo-window-heading{gap:10px}.memo-window-heading h1{font-size:20px}.memo-window .memo-editor{padding:12px}}

@@ -1,4 +1,5 @@
 import {esc,notify,request} from './shared.js';
+import {renderMarkdown} from './markdown.js';
 
 const MAX_TEXT=200000,MAX_IMAGE=20*1024*1024,MAX_IMAGES=50;
 const $=id=>document.getElementById(id);
@@ -7,14 +8,14 @@ const message=error=>error?.message||String(error);
 // Each project has its own save queue and crash-recovery draft. Background
 // updates change metadata without replacing text being edited in this window.
 export function createMemoController(){
-  const entries=new Map();let activeKey='',imageSignature='',previewRunning=0;
+  const entries=new Map();let activeKey='',imageSignature='',previewRunning=0,view='edit',markdownSignature='';
   const previewQueue=[];
   const active=()=>entries.get(activeKey);
   const isActive=entry=>!!entry&&entry.key===activeKey;
   const enqueue=(entry,fn)=>{const task=entry.queue.then(fn,fn);entry.queue=task.catch(()=>{});return task;};
   const draftKey=entry=>`fde:memo-draft:v1:${entry.dataDir}:${entry.id}`;
   function rememberDraft(entry){
-    try{localStorage.setItem(draftKey(entry),JSON.stringify({text:entry.text,baseRevision:entry.memo.revision,updatedAt:new Date().toISOString()}));entry.draftWarning='';}
+    try{localStorage.setItem(draftKey(entry),JSON.stringify({text:entry.text,baseRevision:entry.memo.revision,conflict:!!entry.conflict,updatedAt:new Date().toISOString()}));entry.draftWarning='';}
     catch{entry.draftWarning='临时草稿未保存，请留意自动保存状态';}
   }
   function clearDraft(entry){try{localStorage.removeItem(draftKey(entry));entry.draftWarning='';}catch{}}
@@ -45,6 +46,7 @@ export function createMemoController(){
     $('memo-retry').hidden=!entry.error;$('memo-retry').disabled=entry.saving||entry.loading;
     const busy=!entry.loaded||!!entry.operationCount;
     $('memo-paste').disabled=busy;$('memo-add-images').disabled=busy||entry.memo.images.length>=MAX_IMAGES;$('memo-copy-text').disabled=!entry.loaded||!entry.text;
+    if($('memo-expand'))$('memo-expand').disabled=!entry.loaded;
   }
   function render(entry=active(),replaceText=false){
     if(!isActive(entry))return;
@@ -53,24 +55,39 @@ export function createMemoController(){
       const start=replaceText?entry.selectionStart:editor.selectionStart,end=replaceText?entry.selectionEnd:editor.selectionEnd;
       editor.value=entry.text;editor.setSelectionRange(Math.min(start,entry.text.length),Math.min(end,entry.text.length));
     }
-    renderStatus(entry);renderImages(entry);
+    renderStatus(entry);renderImages(entry);renderPreview(entry);
+  }
+  function renderPreview(entry=active()){
+    if(view!=='preview'||!isActive(entry))return;
+    const signature=JSON.stringify([entry.key,entry.text]);if(signature===markdownSignature)return;markdownSignature=signature;
+    $('memo-preview').innerHTML=entry.text.trim()?renderMarkdown(entry.text):'<p class="memo-preview-empty">暂无内容，点击“编辑”开始记录。</p>';
+  }
+  function setView(next){
+    captureSelection();view=next==='preview'?'preview':'edit';
+    $('memo-text').hidden=view==='preview';$('memo-preview').hidden=view!=='preview';
+    for(const name of ['edit','preview']){$('memo-mode-'+name).setAttribute('aria-pressed',String(view===name));}
+    renderPreview();
   }
   async function readEntry(entry){
     entry.loading=true;renderStatus(entry);
     try{
-      const memo=await request('memo:get',{id:entry.id});acceptMemo(entry,memo);
+      const memo=await request('memo:get',{id:entry.id});
+      if(entry.loaded&&entry.dirty&&memo.revision!==entry.memo.revision&&memo.text!==entry.memo.text&&memo.text!==entry.text){entry.conflict=true;entry.error='备忘录已在其他窗口更新；当前草稿已保留，请核对后重试保存';}
+      acceptMemo(entry,memo);
       if(entry.restoredDraft){
         const draft=entry.restoredDraft;delete entry.restoredDraft;
         if(entry.text===memo.text){entry.dirty=false;clearDraft(entry);}
-        else if(draft.baseRevision!==memo.revision)entry.error='已恢复未保存草稿；备忘录有更新，请核对后重试保存';
+        else if(draft.conflict||draft.baseRevision!==memo.revision){entry.conflict=true;entry.error='已恢复未保存草稿；备忘录有更新，请核对后重试保存';}
         else scheduleSave(entry);
       }
+      if(entry.conflict&&entry.dirty)rememberDraft(entry);
     }catch(error){entry.error=message(error);}
     finally{entry.loading=false;render(entry);}
   }
   async function saveOnce(entry){
     if(!entry.loaded){await readEntry(entry);if(!entry.loaded)return false;}
     if(!entry.dirty){entry.error='';renderStatus(entry);return true;}
+    if(entry.conflict){renderStatus(entry);return false;}
     // Avoid writing an unchanged draft, including a recovered crash draft.
     if(entry.text===entry.memo.text){entry.dirty=false;entry.error='';clearDraft(entry);renderStatus(entry);return true;}
     const text=entry.text,version=entry.editVersion;entry.saving=true;entry.error='';renderStatus(entry);
@@ -80,7 +97,7 @@ export function createMemoController(){
       return true;
     }catch(error){
       entry.error=message(error);
-      if(/备忘录.*更新/.test(entry.error))try{acceptMemo(entry,await request('memo:get',{id:entry.id}));}catch{}
+      if(/备忘录.*更新/.test(entry.error)){entry.conflict=true;try{acceptMemo(entry,await request('memo:get',{id:entry.id}));}catch{}}
       rememberDraft(entry);return false;
     }finally{entry.saving=false;render(entry);}
   }
@@ -92,8 +109,9 @@ export function createMemoController(){
   }
   function scheduleSave(entry){clearTimeout(entry.timer);entry.timer=setTimeout(()=>{void flushEntry(entry);},700);}
   function updateText(entry,text,start,end){
-    entry.text=text;entry.editVersion++;entry.dirty=true;entry.error='';entry.selectionStart=start;entry.selectionEnd=end;rememberDraft(entry);
+    entry.text=text;entry.editVersion++;entry.dirty=true;if(!entry.conflict)entry.error='';entry.selectionStart=start;entry.selectionEnd=end;rememberDraft(entry);
     if(isActive(entry)){$('memo-text').value=text;$('memo-text').setSelectionRange(start,end);renderStatus(entry);}
+    renderPreview(entry);
     scheduleSave(entry);
   }
   function insertText(entry,text,selection){
@@ -141,7 +159,7 @@ export function createMemoController(){
     }).join(''):'<div class="memo-image-empty">截图和图片会保存在这里</div>';
     for(const card of $('memo-images').querySelectorAll('.memo-image-card'))if(!entry.previews.has(card.dataset.image))observer.observe(card);
   }
-  $('memo-text').addEventListener('input',()=>{const entry=active();if(!entry?.loaded)return;const editor=$('memo-text');entry.text=editor.value;entry.editVersion++;entry.dirty=true;entry.error='';captureSelection(entry);rememberDraft(entry);renderStatus(entry);scheduleSave(entry);});
+  $('memo-text').addEventListener('input',()=>{const entry=active();if(!entry?.loaded)return;const editor=$('memo-text');entry.text=editor.value;entry.editVersion++;entry.dirty=true;if(!entry.conflict)entry.error='';captureSelection(entry);rememberDraft(entry);renderStatus(entry);scheduleSave(entry);});
   for(const type of ['select','keyup','click','blur'])$('memo-text').addEventListener(type,()=>captureSelection());
   $('memo-text').addEventListener('paste',event=>{
     const entry=active();if(!entry?.loaded)return;
@@ -159,7 +177,14 @@ export function createMemoController(){
   });
   $('memo-add-images').addEventListener('click',()=>{const entry=active();if(entry)void imageOperation(entry,()=>request('memo:add-images',{id:entry.id}));});
   $('memo-copy-text').addEventListener('click',async()=>{const entry=active();if(!entry)return;try{await request('memo:copy-text',{id:entry.id,text:entry.text});if(isActive(entry))notify('文字已复制');}catch(error){notify(message(error),true);}});
-  $('memo-retry').addEventListener('click',()=>{const entry=active();if(entry)void flushEntry(entry);});
+  $('memo-retry').addEventListener('click',()=>{const entry=active();if(entry){entry.conflict=false;void flushEntry(entry);}});
+  for(const name of ['edit','preview'])$('memo-mode-'+name).addEventListener('click',()=>{setView(name);if(name==='edit')$('memo-text').focus();});
+  async function openMarkdownLink(event){
+    const link=event.target.closest('a');if(!link)return;event.preventDefault();
+    if(event.type==='auxclick'&&event.button!==1)return;
+    const url=link.getAttribute('href');if(url)try{await request('link:open',{url});}catch(error){notify(message(error),true);}
+  }
+  $('memo-preview').addEventListener('click',openMarkdownLink);$('memo-preview').addEventListener('auxclick',openMarkdownLink);
   $('memo-images').addEventListener('click',async event=>{
     const button=event.target.closest('[data-memo-action][data-image]'),entry=active();if(!button||button.disabled||!entry)return;
     const imageId=button.dataset.image,action=button.dataset.memoAction;
@@ -176,12 +201,12 @@ export function createMemoController(){
   return {
     async setProject(project,dataDir=''){
       const key=project?JSON.stringify([dataDir,project.id]):'';if(key===activeKey)return;
-      captureSelection();void flushEntry(active());activeKey=key;imageSignature='';
-      if(!project){$('memo-text').value='';$('memo-text').disabled=true;$('memo-save-status').textContent='先关联项目，再使用备忘录';$('memo-save-status').classList.remove('error');$('memo-count').textContent='0 / 200,000';$('memo-retry').hidden=true;for(const id of ['memo-paste','memo-add-images','memo-copy-text'])$(id).disabled=true;$('memo-images').innerHTML='<div class="memo-image-empty">截图和图片会保存在这里</div>';return;}
+      captureSelection();void flushEntry(active());activeKey=key;imageSignature='';markdownSignature='';$('memo-preview').innerHTML='';
+      if(!project){$('memo-text').value='';$('memo-text').disabled=true;$('memo-save-status').textContent='先关联项目，再使用备忘录';$('memo-save-status').classList.remove('error');$('memo-count').textContent='0 / 200,000';$('memo-retry').hidden=true;for(const id of ['memo-paste','memo-add-images','memo-copy-text','memo-expand'])if($(id))$(id).disabled=true;$('memo-images').innerHTML='<div class="memo-image-empty">截图和图片会保存在这里</div>';return;}
       const entry=entries.get(key)||createEntry(project.id,dataDir);render(entry,true);
       if(!entry.loaded&&!entry.loading)await enqueue(entry,()=>readEntry(entry));
     },
     changed(projectId){for(const entry of entries.values())if(entry.id===projectId&&entry.loaded)void enqueue(entry,()=>readEntry(entry));},
-    flushCurrent:()=>flushEntry(active()),captureSelection,
+    flushCurrent:()=>flushEntry(active()),captureSelection,setView,getView:()=>view,
   };
 }

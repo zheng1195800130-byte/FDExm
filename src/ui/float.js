@@ -35,8 +35,10 @@ $('pin').addEventListener('click',e=>run(async()=>{await request('window:pin',{p
 $('collapse').addEventListener('click',e=>run(async()=>{await memo.flushCurrent();await request('window:ball');},e.currentTarget));
 $('float-workbench').addEventListener('click',e=>run(async()=>{await memo.flushCurrent();await request('window:workbench');},e.currentTarget));
 $('float-refresh').addEventListener('click',()=>run(refreshMaterials));
+$('memo-expand').innerHTML=icon('expand',14)+'扩大';
+$('memo-expand').addEventListener('click',e=>run(async()=>{const p=currentProject(state);if(!p)return;if(!await memo.flushCurrent())throw new Error('备忘录尚未保存，请重试后扩大');await request('window:memo-open',{id:p.id,view:memo.getView()});},e.currentTarget));
 $('float-material').addEventListener('click',e=>run(async()=>{const p=currentProject(state);if(!p){await request('window:workbench');return;}const result=await request('file:add',{id:p.id,kind:'补充资料'});if(result){await load();notify('补充资料已收录');}},e.currentTarget));
 document.addEventListener('click',e=>{const button=e.target.closest('[data-action][data-file]');if(!button||button.disabled)return;run(async()=>{const p=currentProject(state);const action=button.dataset.action;await request('file:'+action,{id:p.id,fileId:button.dataset.file});const messages={'copy':'文件已复制','copy-path':'路径已复制','reveal':'已打开文件所在目录'};if(messages[action])notify(messages[action]);},button);});
-let timer;window.fde?.onChange(event=>{if(event?.memoUpdated){memo.changed(event.memoUpdated);return;}clearTimeout(timer);timer=setTimeout(()=>run(load),150);});
+let timer;window.fde?.onChange(event=>{if(event?.memoTabRequested)selectTab('memo');if(event?.memoUpdated){memo.changed(event.memoUpdated);return;}clearTimeout(timer);timer=setTimeout(()=>run(load),150);});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')run(async()=>{await memo.flushCurrent();await request('window:ball');});});
 await run(load);

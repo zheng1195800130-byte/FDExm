@@ -16,6 +16,7 @@ export const icon = (name, size=20) => {
     copy:'<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
     upload:'<path d="M12 16V3m-5 5 5-5 5 5M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/>',
     close:'<path d="m6 6 12 12M6 18 18 6"/>',
+    expand:'<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M3 3l6 6m12-6-6 6M3 21l6-6m12 6-6-6"/>',
     check:'<path d="m5 12 4 4L19 6"/>',
     plus:'<path d="M12 5v14M5 12h14"/>',
     pin:'<path d="m16 3 5 5-4 1-4 4-1 5-3-3-6 6m6-6-3-3 5-1 4-4Z"/>',

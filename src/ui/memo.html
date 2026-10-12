@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'">
+  <title>备忘录 · FDE Desk</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="float.css">
+  <link rel="stylesheet" href="memo-window.css">
+</head>
+<body class="memo-window-body">
+  <main id="float-memo-panel" class="memo-window">
+    <header class="memo-window-header">
+      <div class="memo-window-heading"><h1>备忘录</h1><span id="memo-project-name"></span></div>
+      <button id="memo-collapse" class="btn small" type="button">返回悬浮框</button>
+    </header>
+    <div class="memo-toolbar">
+      <button id="memo-paste" class="btn small" disabled>粘贴</button>
+      <button id="memo-add-images" class="btn small" disabled>添加图片</button>
+      <button id="memo-copy-text" class="btn small" disabled>复制文字</button>
+    </div>
+    <div class="memo-window-content">
+      <section class="memo-text-column" aria-label="备忘录文字">
+        <div class="memo-editor-label"><label for="memo-text">随手记</label><div class="memo-mode-switch" role="group" aria-label="备忘录显示方式"><button id="memo-mode-edit" type="button" aria-pressed="true">编辑</button><button id="memo-mode-preview" type="button" aria-pressed="false">预览</button></div><span id="memo-count">0 / 200,000</span></div>
+        <textarea id="memo-text" class="memo-editor" maxlength="200000" spellcheck="false" aria-describedby="memo-save-status" placeholder="随手记下想法、问题或待办…&#10;也可以 Ctrl+V 粘贴文字和截图。" disabled></textarea>
+        <div id="memo-preview" class="memo-preview markdown-body" role="article" aria-label="备忘录 Markdown 预览" tabindex="0" hidden></div>
+        <div class="memo-status-line"><span id="memo-save-status" role="status" aria-live="polite">正在读取备忘录…</span><button id="memo-retry" class="link-btn" type="button" hidden>重试保存</button></div>
+      </section>
+      <section class="memo-image-column" aria-label="备忘录图片">
+        <h2>图片</h2>
+        <div id="memo-images" class="memo-images"><div class="memo-image-empty">截图和图片会保存在这里</div></div>
+      </section>
+    </div>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="memo-window.js"></script>
+</body>
+</html>

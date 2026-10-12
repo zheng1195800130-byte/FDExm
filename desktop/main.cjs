@@ -26,7 +26,7 @@ const { RequirementService } = require('../src/core/requirement-service.cjs');
 const { DailyDesk, localDate, carryover } = require('../src/core/daily-desk.cjs');
 const requirementSummarizer = require('../src/core/requirement-summarizer.cjs');
 const ROOT = path.resolve(__dirname, '..');
-const TRUSTED_PAGES = new Map(['index.html', 'float.html', 'ball.html'].map(name => [name, pathToFileURL(path.join(ROOT, 'src/ui', name)).href]));
+const TRUSTED_PAGES = new Map(['index.html', 'float.html', 'ball.html', 'memo.html'].map(name => [name, pathToFileURL(path.join(ROOT, 'src/ui', name)).href]));
 const DATA = prepareDataDirectory({ root: ROOT, isPackaged: app.isPackaged, execPath: process.execPath });
 fs.mkdirSync(path.join(DATA, 'runtime'), { recursive: true });
 app.setPath('userData', path.join(DATA, 'runtime'));
@@ -39,7 +39,8 @@ const materialScans = new Map();
 let ballSaveTimer;
 let dailyDesk, dayTimer, lastLocalDay;
 const exec = promisify(execFile);
-const windows = () => [main, ball, panel].filter(w => w && !w.isDestroyed());
+const memoWindows = new Map();
+const windows = () => [main, ball, panel, ...memoWindows.values()].filter(w => w && !w.isDestroyed());
 const broadcast = (extra = {}) => windows().forEach(w => w.webContents.send('fde:changed', extra));
 const commit = fn => { const task = queue.then(fn, fn); queue = task.catch(() => {}); return task; };
 function scanMaterials(id) {
@@ -150,6 +151,25 @@ function showPanel() {
   panel.setPosition(Math.max(a.x, Math.min(b.x + b.width - p.width, a.x + a.width - p.width)), Math.max(a.y, Math.min(b.y - p.height + b.height, a.y + a.height - p.height)));
   ball.hide(); panel.show(); panel.focus(); broadcast();
 }
+function openMemo(id, view) {
+  const selected = project(id);
+  let win = memoWindows.get(id);
+  if (win && !win.isDestroyed()) {
+    panel.hide(); ball.hide(); if (win.isMinimized()) win.restore(); win.show(); win.focus(); return true;
+  }
+  const bounds = main.getBounds(), area = screen.getDisplayMatching(bounds).workArea;
+  const width = Math.min(bounds.width, area.width), height = Math.min(bounds.height, area.height);
+  win = new BrowserWindow(options({ width, height, minWidth: Math.min(640, area.width), minHeight: Math.min(480, area.height), title: `备忘录 · ${selected.name}` }));
+  win.memoInitialView = view === 'preview' ? 'preview' : 'edit';
+  memoWindows.set(id, win); protect(win); win.setMenuBarVisibility(false);
+  win.setPosition(area.x + Math.round((area.width - width) / 2), area.y + Math.round((area.height - height) / 2));
+  win.once('ready-to-show', () => { panel.hide(); ball.hide(); win.show(); win.focus(); });
+  // Flush the per-project save queue before the renderer confirms close.
+  win.on('close', event => { if (!quitting && !win.memoCloseConfirmed) { event.preventDefault(); win.webContents.send('fde:changed', { memoCloseRequested: true }); } });
+  win.on('closed', () => { if (memoWindows.get(id) === win) memoWindows.delete(id); });
+  win.loadFile(path.join(ROOT, 'src/ui/memo.html'));
+  return true;
+}
 async function copyFile(filePath) {
   if (process.platform !== 'win32') throw new Error('文件复制目前支持 Windows，可使用复制路径');
   // .NET supplies the standard Windows FileDropList/CF_HDROP implementation.
@@ -196,6 +216,22 @@ async function dispatch(action, p, sender) {
   if (action.startsWith('memo:')) return memoActions(action, p, sender);
   if (action.startsWith('window:')) {
     switch (action.slice(7)) {
+      case 'memo-open': return openMemo(p.id, p.view);
+      case 'memo-context': {
+        const entry = [...memoWindows].find(([, win]) => win.webContents === sender);
+        if (!entry) throw new Error('备忘录窗口不存在');
+        const selected = project(entry[0]);
+        return { project: { id: selected.id, name: selected.name }, dataDir: DATA, view: entry[1].memoInitialView };
+      }
+      case 'memo-close': {
+        const entry = [...memoWindows].find(([, win]) => win.webContents === sender);
+        if (!entry) throw new Error('备忘录窗口不存在');
+        if (store.getState().projects.some(item => item.id === entry[0])) store.setSettings({ activeProjectId: entry[0] });
+        showPanel(); panel.webContents.send('fde:changed', { memoTabRequested: true });
+        entry[1].memoCloseConfirmed = true;
+        setTimeout(() => { if (!entry[1].isDestroyed()) entry[1].close(); }, 50);
+        return true;
+      }
       case 'compact': compact(); break;
       case 'workbench': showWorkbench(); break;
       case 'panel': showPanel(); break;
@@ -363,7 +399,7 @@ function isTrustedRequest(event) {
     const url = new URL(frame.url);
     // A same-document anchor changes the URL, not the identity of the local page.
     url.hash = '';
-    const page = owner === main ? 'index.html' : owner === panel ? 'float.html' : 'ball.html';
+    const page = owner === main ? 'index.html' : owner === panel ? 'float.html' : owner === ball ? 'ball.html' : 'memo.html';
     return TRUSTED_PAGES.get(page) === url.href;
   } catch { return false; }
 }

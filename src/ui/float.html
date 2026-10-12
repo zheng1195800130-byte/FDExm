@@ -17,9 +17,10 @@
       <div id="float-scan-status" class="material-scan-status" role="status" aria-live="polite" hidden></div><div id="float-files" class="float-files"></div>
     </section>
     <section id="float-memo-panel" class="float-view float-memo-panel" role="tabpanel" aria-labelledby="float-tab-memo" hidden>
-      <div class="memo-toolbar"><button id="memo-paste" class="btn small" disabled>粘贴</button><button id="memo-add-images" class="btn small" disabled>添加图片</button><button id="memo-copy-text" class="btn small" disabled>复制文字</button></div>
-      <div class="memo-editor-label"><label for="memo-text">随手记</label><span id="memo-count">0 / 200,000</span></div>
+      <div class="memo-toolbar"><button id="memo-paste" class="btn small" disabled>粘贴</button><button id="memo-add-images" class="btn small" disabled>添加图片</button><button id="memo-copy-text" class="btn small" disabled>复制文字</button><button id="memo-expand" class="btn small" title="在独立大窗口中打开当前项目备忘录" disabled>扩大</button></div>
+      <div class="memo-editor-label"><label for="memo-text">随手记</label><div class="memo-mode-switch" role="group" aria-label="备忘录显示方式"><button id="memo-mode-edit" type="button" aria-pressed="true">编辑</button><button id="memo-mode-preview" type="button" aria-pressed="false">预览</button></div><span id="memo-count">0 / 200,000</span></div>
       <textarea id="memo-text" class="memo-editor" maxlength="200000" spellcheck="false" aria-describedby="memo-help memo-save-status" placeholder="随手记下想法、问题或待办…&#10;也可以 Ctrl+V 粘贴文字和截图。" disabled></textarea>
+      <div id="memo-preview" class="memo-preview markdown-body" role="article" aria-label="备忘录 Markdown 预览" tabindex="0" hidden></div>
       <div class="memo-status-line"><span id="memo-save-status" role="status" aria-live="polite">先关联项目，再使用备忘录</span><button id="memo-retry" class="link-btn" type="button" hidden>重试保存</button></div>
       <p id="memo-help" class="memo-help">本项目独立保存 · 可粘贴或拖入图片</p>
       <div id="memo-images" class="memo-images" aria-label="备忘录图片"><div class="memo-image-empty">截图和图片会保存在这里</div></div>
