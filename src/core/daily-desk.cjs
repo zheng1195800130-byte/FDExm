@@ -56,25 +56,26 @@ function carryover(project, date) {
   return result.slice(0,30);
 }
 class DailyDesk {
-  constructor({ store, reader, getModel, getRules = () => '', commit = fn => Promise.resolve().then(fn), notify = () => {}, now = () => new Date(), request = requestJson }) {
-    Object.assign(this,{store,reader,getModel,getRules,commit,notify,now,request});
+  constructor({ store, reader, getModel, getRules = () => '', commit = fn => Promise.resolve().then(fn), notify = () => {}, now = () => new Date(), request = requestJson, prepare = async () => {} }) {
+    Object.assign(this,{store,reader,getModel,getRules,commit,notify,now,request,prepare});
     this.captures = new Map(); this.runs = new Map(); this.stopped = false;
   }
   project(id) { return this.store.getState().projects.find(p => p.id === id && !p.archivedAt); }
   isCurrent(id, revision) { const p = this.project(id); return !!p && (p.archiveRevision || 0) === revision; }
   file(id,date) { if (!validDate(date)) throw new Error('日期无效'); return path.join(this.store.projectFolder(id),'每日收录',`${date}.json`); }
   raw(id,date) { try { return JSON.parse(fs.readFileSync(this.file(id,date),'utf8')); } catch (e) { if (e.code === 'ENOENT') return { date, turns: [] }; throw new Error('本地每日收录损坏，请保留档案后恢复'); } }
-  capture(id) {
+  capture(id,scope={}) {
     if (this.stopped) return Promise.resolve();
+    if (scope.date !== undefined && !validDate(scope.date)) return Promise.reject(new Error('日期无效'));
     if (this.captures.has(id)) { this.captures.get(id).dirty = true; return this.captures.get(id).promise; }
     const job = {dirty:false};
-    job.promise = (async () => { do { job.dirty=false; await this.captureOnce(id); } while(job.dirty && !this.stopped); })().finally(()=>this.captures.delete(id));
+    job.promise = (async () => { do { job.dirty=false; await this.captureOnce(id,scope); } while(job.dirty && !this.stopped); })().finally(()=>this.captures.delete(id));
     this.captures.set(id,job); return job.promise;
   }
-  async captureOnce(id) {
+  async captureOnce(id,scope={}) {
     const project = this.project(id); if (!project || this.stopped) return;
     const archiveRevision = project.archiveRevision || 0;
-    const date=localDate(this.now()), dates=[yesterday(date),date], threadId=project.codex?.threadId || '';
+    const date=scope.date||localDate(this.now()), dates=scope.date?[date]:[yesterday(date),date], threadId=project.codex?.threadId || '';
     for (const day of dates) {
       const read = threadId ? await this.reader.readThread({threadId,cwd:project.devDir,history:true,date:day}) : {turns:[]};
       if (this.stopped || !this.isCurrent(id, archiveRevision) || this.project(id)?.codex?.threadId !== threadId) return;
@@ -100,7 +101,7 @@ class DailyDesk {
     const current={...this.project(id),managementDir:this.store.projectFolder(id)};
     const historyToken=hash(['material-tags-v1',threadId,targets(current).map(item=>item.id).sort()]);
     let materialTurns=[],historyReadFailed=false;
-    if(threadId&&current.materialTagHistoryToken!==historyToken){
+    if(scope.materialHistory!==false&&threadId&&current.materialTagHistoryToken!==historyToken){
       // One bounded, local-only history read on first link or catalog changes. Never requests a model.
       let history;try{history=await this.reader.readThread({threadId,cwd:current.devDir,history:true});}catch{history={turns:[]};historyReadFailed=true;}
       if(this.stopped||!this.isCurrent(id,archiveRevision)||this.project(id)?.codex?.threadId!==threadId)return;
@@ -108,7 +109,7 @@ class DailyDesk {
     }
     const allHints=[...(current.materialReferences||[]),...collectReferences(current,materialTurns),...dates.flatMap(day=>collectReferences(current,this.raw(id,day).threadId===threadId?this.raw(id,day).turns:[]))];
     const uniqueHints=[...new Map(allHints.map(h=>[`${h.targetId}:${h.turnId}:${h.evidence}`,h])).values()].sort((a,b)=>String(a.sourceAt).localeCompare(String(b.sourceAt))).slice(-200);
-    await this.commit(()=>{if(!this.stopped&&this.isCurrent(id,archiveRevision)&&this.project(id)?.codex?.threadId===threadId){const before=JSON.stringify([current.materialReferences,current.materialAnnotations,current.materialTagHistoryToken]);const saved=this.store.saveMaterialReferences(id,uniqueHints,historyReadFailed?current.materialTagHistoryToken:historyToken);if(before!==JSON.stringify([saved.materialReferences,saved.materialAnnotations,saved.materialTagHistoryToken]))this.notify({materialsUpdated:id});this.rollover(id,date);}});
+    await this.commit(()=>{if(!this.stopped&&this.isCurrent(id,archiveRevision)&&this.project(id)?.codex?.threadId===threadId){const before=JSON.stringify([current.materialReferences,current.materialAnnotations,current.materialTagHistoryToken]);const saved=this.store.saveMaterialReferences(id,uniqueHints,historyReadFailed||scope.materialHistory===false?current.materialTagHistoryToken:historyToken);if(before!==JSON.stringify([saved.materialReferences,saved.materialAnnotations,saved.materialTagHistoryToken]))this.notify({materialsUpdated:id});this.rollover(id,date);}});
   }
   rollover(id,date=localDate(this.now())) {
     const p=this.project(id); if (!p) return;
@@ -127,10 +128,11 @@ class DailyDesk {
   run(id,date=localDate(this.now())) {
     if (!validDate(date)) return Promise.reject(new Error('日期无效'));
     if (this.runs.has(id)) return this.runs.get(id);
-    const promise=this.organize(id,date).finally(()=>this.runs.delete(id)); this.runs.set(id,promise); return promise;
+    const revision=this.project(id)?.archiveRevision||0;
+    const promise=(async()=>{await this.prepare(id);if(this.stopped||!this.isCurrent(id,revision))throw new Error('项目不存在、已归档或状态已改变');return this.organize(id,date);})().finally(()=>this.runs.delete(id)); this.runs.set(id,promise); return promise;
   }
   async organize(id,date) {
-    await this.capture(id);
+    await this.capture(id,{date,materialHistory:false});
     let p=this.project(id); if (!p) throw new Error('项目不存在或已归档，请先恢复项目');
     const archiveRevision=p.archiveRevision||0;
     const {config,apiKey}=this.getModel();

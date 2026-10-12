@@ -30,6 +30,24 @@ test('整理预设仅在人工整理的增量请求使用，保存或改风格�
 });
 test('上海日期按零点切换',()=>{assert.equal(localDate('2026-10-10T15:59:59Z'),'2026-10-10');assert.equal(localDate('2026-10-10T16:00:00Z'),'2026-10-11');});
 
+test('手动整理只读取指定当日对话，不补读昨日或无日期历史',async t=>{
+ const f=await fixture(t),id=f.projects[0].id,reads=[],read=f.reader.readThread;
+ f.reader.readThread=async input=>{reads.push(input);return read(input);};f.add('甲项目','yesterday','2026-10-09');f.add('甲项目','today');
+ await f.service.run(id,'2026-10-10');assert.deepEqual(reads.map(input=>input.date),['2026-10-10']);assert.deepEqual(f.calls[0].sources.filter(s=>s.id.startsWith('turn:')).map(s=>s.id),['turn:today']);assert.equal(f.service.raw(id,'2026-10-09').turns.length,0);
+ await f.service.run(id,'2026-10-10');assert.equal(f.calls.length,1);assert.deepEqual(reads.map(input=>input.date),['2026-10-10','2026-10-10']);
+});
+
+test('点击后先刷新资料再读取对话，连续点击共用一次整理',async t=>{
+ const f=await fixture(t),id=f.projects[0].id,events=[];f.add('甲项目','one');let release;
+ f.service.prepare=async projectId=>{events.push('prepare:'+projectId);await new Promise(resolve=>release=resolve);};const read=f.reader.readThread;f.reader.readThread=async input=>{events.push('read');return read(input);};
+ const first=f.service.run(id,'2026-10-10'),second=f.service.run(id,'2026-10-10');assert.equal(first,second);assert.deepEqual(events,['prepare:'+id]);release();await first;assert.deepEqual(events,['prepare:'+id,'read']);assert.equal(f.calls.length,1);
+});
+
+test('跨日归档只使用本地结果，不读取会话、不触发模型',async t=>{
+ const f=await fixture(t),id=f.projects[0].id;f.add('甲项目','one');await f.service.run(id,'2026-10-10');f.reader.readThread=()=>{throw new Error('禁止后台读会话');};f.setTime('2026-10-11T01:00:00Z');f.service.rollover(id,'2026-10-11');
+ const p=f.store.getState().projects[0];assert.ok(p.reports.some(r=>r.date==='2026-10-10'));assert.ok(p.dailyDesk.days['2026-10-10'].closedAt);assert.equal(f.calls.length,1);
+});
+
 test('归档项目停止本地收录及全部项目整理，恢复后继续收录',async t=>{
  const f=await fixture(t),id=f.projects[0].id;
  f.add('甲项目','a');f.add('乙项目','b');f.store.setProjectArchived(id,true);

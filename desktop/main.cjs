@@ -13,7 +13,6 @@ const { displayProject, displaySettings, DEFAULT_IGNORE_RULES } = require('../sr
 const codex = require('../src/core/codex.cjs');
 const summarizer = require('../src/core/summarizer.cjs');
 const { SummaryService } = require('../src/core/summary-service.cjs');
-const { SessionWatcher } = require('../src/core/session-watcher.cjs');
 const { SummaryRules } = require('../src/core/summary-rules.cjs');
 const { normalizePreset, LIMITS: PRESET_LIMITS } = require('../src/core/summary-preset.cjs');
 const { externalUrl } = require('../src/core/external-links.cjs');
@@ -33,8 +32,8 @@ app.setPath('userData', path.join(DATA, 'runtime'));
 app.setPath('sessionData', path.join(DATA, 'runtime', 'browser'));
 app.setAppUserModelId('local.fde.desk');
 app.setName('FDE Desk');
-let store, main, ball, panel, tray, modelSettings, summaryRules, summaryService, requirementService, sessionWatcher, memoActions, quitting = false;
-let queue = Promise.resolve(), scanBusy = false;
+let store, main, ball, panel, tray, modelSettings, summaryRules, summaryService, requirementService, memoActions, quitting = false;
+let queue = Promise.resolve();
 const materialScans = new Map();
 let ballSaveTimer;
 let dailyDesk, dayTimer, lastLocalDay;
@@ -49,7 +48,6 @@ function scanMaterials(id) {
   // Both windows can request refresh together. Share one queued, fresh scan;
   // the ordinary local background index keeps its inexpensive metadata cache.
   const scan = commit(() => project(id).archivedAt ? project(id) : store.scanProject(id, { force: true }));
-  scan.then(() => dailyDesk?.capture(id).catch(error => broadcast({warning:error.message})), () => {});
   materialScans.set(id, scan);
   const clear = () => { if (materialScans.get(id) === scan) materialScans.delete(id); };
   scan.then(clear, clear);
@@ -74,9 +72,6 @@ async function openPath(p) {
   const error = await shell.openPath(p);
   if (error) throw new Error(`无法打开：${error}`);
   return true;
-}
-async function watchLinkedSession() {
-  await sessionWatcher.sync();
 }
 function icon() { return nativeImage.createFromPath(path.join(ROOT, 'assets', 'icon.png')); }
 function options(extra = {}) {
@@ -382,9 +377,9 @@ async function dispatch(action, p, sender) {
     case 'codex:read': {
       const proj = project(p.id);
       if (!proj.codex.threadId) throw new Error('请先关联本项目的 Codex 会话');
-      const value = await codex.readThread({ threadId: proj.codex.threadId, cwd: proj.devDir, ...(p.date ? { date: p.date } : {}) });
-      store.updateProject(p.id, { codex: { ...proj.codex, lastSyncAt: new Date().toISOString() } });
-      return { ...value, drafts: codex.extractDrafts(value.turns) };
+      const raw = dailyDesk.raw(p.id,p.date || localDate(new Date()));
+      const value = raw.threadId === proj.codex.threadId ? raw : {turns:[],date:p.date || localDate(new Date())};
+      return { ...value, cached:true, truncated:!!value.partial, drafts: codex.extractDrafts(value.turns) };
     }
     case 'clipboard:text': {
       if (typeof p.text !== 'string' || p.text.length > 2 * 1024 * 1024) throw new Error('复制内容过长');
@@ -415,8 +410,6 @@ function setupIPC() {
       const promise = direct ? execute() : queue.then(execute, execute);
       if (!direct) queue = promise.catch(() => {});
       const value = await promise;
-      if (['project:create', 'project:select', 'project:update', 'project:archive', 'project:restore', 'codex:bind'].includes(input.action)) await watchLinkedSession();
-      if (['project:create','project:update','project:restore','codex:bind','file:add','file:paste','file:update'].includes(input.action)) dailyDesk.capture(input.payload?.id || value?.id).catch(error=>broadcast({warning:error.message}));
       if (/^(project:|file:(add|paste|update)|requirement:|record:|report:save|cycle:|delivery:|codex:bind|model:save|summary:rules-save)/.test(input.action)) broadcast();
       if (/^memo:(save|paste|add-image|add-images|remove-image)$/.test(input.action)) broadcast({ memoUpdated: input.payload?.id });
       return { ok: true, value };
@@ -433,49 +426,19 @@ else {
     summaryRules = new SummaryRules({ dataDir: DATA });
     summaryService = new SummaryService({ store, reader: codex, summarizer, getModel: () => ({ config: modelSettings.config(), apiKey: modelSettings.key() }), getRules: () => summaryRules.read(), commit, notify: broadcast, delay: process.env.FDE_TEST === '1' ? 100 : 5000 });
     requirementService = new RequirementService({ store, reader: codex, summarizer: requirementSummarizer, getModel: () => ({ config: modelSettings.config(), apiKey: modelSettings.key() }), commit, notify: broadcast, delay: process.env.FDE_TEST === '1' ? 100 : 5000 });
-    dailyDesk = new DailyDesk({store,reader:codex,getModel:()=>({config:modelSettings.config(),apiKey:modelSettings.key()}),getRules:()=>summaryRules.read(),commit,notify:broadcast});
-    sessionWatcher = new SessionWatcher({
-      resolveSessions: async () => {
-        const projects = store.getState().projects.filter(proj => !proj.archivedAt && proj.codex.threadId);
-        const catalogs = new Map();
-        const sessions = [];
-        for (const proj of projects) {
-          if (!catalogs.has(proj.devDir)) catalogs.set(proj.devDir, await codex.listThreads({ cwd: proj.devDir }));
-          const thread = catalogs.get(proj.devDir).find(item => item.id === proj.codex.threadId);
-          if (thread) sessions.push({ projectId: proj.id, path: thread.path });
-          else broadcast({ warning: `${proj.name}：找不到已关联会话，可重新关联或手动读取` });
-        }
-        return sessions;
-      },
-      onChange: id => { broadcast({ codexUpdated: id }); dailyDesk.capture(id).catch(error=>broadcast({warning:error.message})); },
-      onError: id => broadcast({ warning: `${id ? project(id).name + '：' : ''}会话监听中断，可重新关联或手动整理` }),
-      delay: process.env.FDE_TEST === '1' ? 50 : 1500,
-    });
+    dailyDesk = new DailyDesk({store,reader:codex,getModel:()=>({config:modelSettings.config(),apiKey:modelSettings.key()}),getRules:()=>summaryRules.read(),commit,notify:broadcast,prepare:id=>{
+      if(!project(id).codex.threadId)throw new Error('请先确认本项目的 Codex 会话入口');
+      return scanMaterials(id);
+    }});
     setupIPC(); createWindows();
-    // A single startup scan picks up material edits made while the app was
-    // closed. Start session subscriptions afterwards so their bootstrap cannot
-    // summarize a stale cached preview before the fresh scan has committed.
-    const startupScans = store.getState().projects.filter(proj=>!proj.archivedAt).map(proj => scanMaterials(proj.id).then(
-      () => broadcast(),
-      error => { broadcast({ warning: `${proj.name}：${error.message}` }); },
-    ));
-    Promise.allSettled(startupScans).then(() => watchLinkedSession()).catch(error => broadcast({ warning: error.message }));
-    // A local midnight checkpoint: no model access. Startup also catches a day
-    // boundary crossed while the application was closed or Windows was asleep.
+    // Manual synchronization only. Startup/midnight archive existing local
+    // results without scanning materials or reading Codex conversation files.
     lastLocalDay = localDate(new Date());
-    const checkDay = () => { const day=localDate(new Date()); if(day!==lastLocalDay){lastLocalDay=day;dailyDesk.allCapture().then(()=>broadcast({dayChanged:day}));} };
+    const archiveLocal = day => commit(()=>{for(const proj of store.getState().projects.filter(proj=>!proj.archivedAt))dailyDesk.rollover(proj.id,day);});
+    archiveLocal(lastLocalDay).catch(error=>broadcast({warning:error.message}));
+    const checkDay = () => { const day=localDate(new Date()); if(day!==lastLocalDay){lastLocalDay=day;archiveLocal(day).then(()=>broadcast({dayChanged:day}),error=>broadcast({warning:error.message}));} };
     dayTimer=setInterval(checkDay,1000);dayTimer.unref();
     require('electron').powerMonitor.on('resume',checkDay);
-    if (process.env.FDE_TEST !== '1') {
-      const timer = setInterval(() => {
-        // This timer refreshes the local material index only; it never calls AI.
-        const id = store.getState().settings.activeProjectId;
-        if (!id || scanBusy) return;
-        scanBusy = true;
-        queue = queue.then(() => project(id).archivedAt ? undefined : store.scanProject(id)).then(() => broadcast(), error => broadcast({ warning: error.message })).finally(() => { scanBusy = false; });
-      }, 60000);
-      timer.unref();
-    }
   }).catch(error => { dialog.showErrorBox('FDE Desk 启动失败', error.message); quitting = true; app.quit(); });
   app.on('activate', () => main && showWorkbench());
   app.on('before-quit', () => {
@@ -483,7 +446,6 @@ else {
     summaryService?.stop();
     requirementService?.stop();
     dailyDesk?.stop(); clearInterval(dayTimer);
-    sessionWatcher?.stop();
     if (store) {
       saveBounds();
       if (ball && !ball.isDestroyed()) store.setSettings({ ballPosition: { x: ball.getPosition()[0], y: ball.getPosition()[1] } });
