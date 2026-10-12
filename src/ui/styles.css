@@ -46,3 +46,6 @@
 .project-manager-row>div{min-width:0;overflow-wrap:anywhere}
 .project-manager-row small{display:block;margin-top:5px;color:var(--muted,#70847c)}
 .project-manager-row button{flex-shrink:0}
+
+/* Project action stays beside the title and wraps on smaller windows. */
+.page-heading:has(.heading-title-row)>div:first-child{min-width:0}.page-heading:has(.heading-title-row)>.heading-actions{flex-shrink:0}.heading-title-row{display:flex;align-items:center;flex-wrap:wrap;gap:12px 20px}.heading-title-row h1{margin:0;overflow-wrap:anywhere}.heading-title-row .overview-organize{min-height:44px;padding:10px 20px;font-size:14px;font-weight:600;flex-shrink:0}

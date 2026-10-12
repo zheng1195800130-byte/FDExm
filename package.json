@@ -1,6 +1,6 @@
 {
   "name": "fde-desk",
-  "version": "0.5.17",
+  "version": "0.5.18",
   "description": "个人 FDE 工作台：资料、需求、工作记录与项目进度",
   "private": true,
   "main": "desktop/main.cjs",
