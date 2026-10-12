@@ -28,7 +28,7 @@ class SummaryService {
       job.pending = false; job.force = false; job.retryFailed = false;
     }
   }
-  project(id) { return this.store.getState().projects.find(p => p.id === id); }
+  project(id) { return this.store.getState().projects.find(p => p.id === id && !p.archivedAt); }
   async status(id, state, message, threadId) {
     await this.commit(() => {
       if (this.stopped || !this.project(id)) return;
@@ -52,7 +52,7 @@ class SummaryService {
       if (!rulesCaptured || !this.getRules) return true;
       try { return this.getRules() === rules; } catch { return false; }
     };
-    const valid = () => !!project && !this.stopped && this.revision === revision && this.project(id)?.codex?.threadId === threadId && this.project(id)?.devDir === project.devDir && rulesUnchanged();
+    const valid = () => !!project && !this.stopped && this.revision === revision && (this.project(id)?.archiveRevision || 0) === (project.archiveRevision || 0) && this.project(id)?.codex?.threadId === threadId && this.project(id)?.devDir === project.devDir && rulesUnchanged();
     try {
       if (!threadId) return;
       // One snapshot drives both the fingerprint and every chunk of this job.

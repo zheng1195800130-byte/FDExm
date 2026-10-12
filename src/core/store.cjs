@@ -241,6 +241,8 @@ class Store {
       for (const record of project.records) dateValue(record.date);
       for (const report of project.reports) { dateValue(report.date); if (typeof report.text !== 'string') throw new Error('日报结构无效'); }
       project.codex = codexDefaults(project.codex);
+      if (project.archivedAt !== undefined) project.archivedAt = sourceTimestamp(project.archivedAt, '项目归档时间');
+      if (project.archiveRevision !== undefined && (!Number.isSafeInteger(project.archiveRevision) || project.archiveRevision < 0)) throw new Error('项目归档版本无效');
       if (project.requirementConfirmations !== undefined && !Array.isArray(project.requirementConfirmations)) throw new Error('需求确认档案结构无效');
       project.requirementConfirmations ||= [];
       project.requirementsAfter = sourceTimestamp(project.requirementsAfter || '', '需求时间筛选');
@@ -350,7 +352,7 @@ class Store {
     if (own(patch, 'summaryPreset')) updates.summaryPreset = normalizePreset(patch.summaryPreset);
     if (own(patch, 'materialDisplay')) updates.materialDisplay = displaySettings(patch.materialDisplay);
     if (own(patch, 'activeProjectId')) {
-      if (patch.activeProjectId !== '') this._project(patch.activeProjectId);
+      if (patch.activeProjectId !== '' && this._project(patch.activeProjectId).archivedAt) throw new Error('项目已归档，请先恢复项目');
       updates.activeProjectId = patch.activeProjectId;
     }
     for (const key of ['alwaysOnTop', 'autoScan']) if (own(patch, key)) {
@@ -402,12 +404,23 @@ class Store {
     const time = now();
     const cycle = { id: id(), name: '首次交付', status: '进行中', startedAt: time };
     const project = { id: id(), name, customer: plain(input.customer, '客户', 300), sourceDir, devDir, artifactDir, indexArtifacts,
-      stage: '需求梳理', nextAction: '', blocker: '', createdAt: time, updatedAt: time,
+      stage: '需求梳理', nextAction: '', blocker: '', createdAt: time, updatedAt: time, archivedAt: '', archiveRevision: 0,
       cycles: [cycle], activeCycleId: cycle.id, files: [], requirements: [], requirementConfirmations: [], requirementsAfter: '', records: [], deliveries: [], reports: [],
       codex: codexDefaults(), requirementAnalysis: requirementAnalysisDefaults(), scanWarning: '', lastScanAt: '',
     };
     this.state.projects.push(project);
     this.state.settings.activeProjectId = project.id;
+    return this._commit(project);
+  }
+
+  setProjectArchived(projectId, archived) {
+    if (typeof archived !== 'boolean') throw new Error('项目归档状态无效');
+    const project = this._project(projectId);
+    if (!!project.archivedAt === archived) return clone(project);
+    project.archivedAt = archived ? now() : '';
+    project.archiveRevision = (project.archiveRevision || 0) + 1;
+    if (archived && this.state.settings.activeProjectId === projectId) this.state.settings.activeProjectId = this.state.projects.find(item => !item.archivedAt)?.id || '';
+    if (!archived) this.state.settings.activeProjectId = projectId;
     return this._commit(project);
   }
 
@@ -1041,6 +1054,7 @@ class Store {
     for(const draft of drafts){this._project(draft.id);if(overrides.has(draft.id)||typeof draft.text!=='string'||draft.text.length>200000)throw new Error('日报草稿无效');overrides.set(draft.id,draft.text);}
     const texts=[],pendingProjects=[];
     for(const project of this.state.projects){
+      if(project.archivedAt)continue;
       const day=project.dailyDesk?.days?.[date],saved=project.reports.find(r=>r.date===date&&!r.autoArchived);
       if(day?.unprocessedCount||day?.status==='error')pendingProjects.push(project.name);
       const text=overrides.has(project.id)?overrides.get(project.id):saved?.text || this.generateReport(project.id,date).text;

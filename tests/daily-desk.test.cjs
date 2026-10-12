@@ -29,6 +29,33 @@ test('整理预设仅在人工整理的增量请求使用，保存或改风格�
  assert.deepEqual(f.calls[1].sources.map(s=>s.id),['turn:two']);
 });
 test('上海日期按零点切换',()=>{assert.equal(localDate('2026-10-10T15:59:59Z'),'2026-10-10');assert.equal(localDate('2026-10-10T16:00:00Z'),'2026-10-11');});
+
+test('归档项目停止本地收录及全部项目整理，恢复后继续收录',async t=>{
+ const f=await fixture(t),id=f.projects[0].id;
+ f.add('甲项目','a');f.add('乙项目','b');f.store.setProjectArchived(id,true);
+ await f.service.allCapture();assert.equal(f.service.raw(id,'2026-10-10').turns.length,0);
+ const result=await f.service.runAll('2026-10-10');assert.deepEqual(result.results.map(p=>p.id),[f.projects[1].id]);assert.equal(f.calls.length,1);
+ await assert.rejects(f.service.run(id,'2026-10-10'),/归档/);
+ f.store.setProjectArchived(id,false);await f.service.capture(id);assert.equal(f.service.raw(id,'2026-10-10').turns.length,1);
+});
+
+test('归档后又恢复也不接纳此前尚未返回的收录内容',async t=>{
+ const f=await fixture(t),id=f.projects[0].id;f.add('甲项目','late');
+ let release,started;const ready=new Promise(resolve=>started=resolve),reader=f.reader.readThread;
+ f.reader.readThread=async input=>{started();await new Promise(resolve=>release=resolve);return reader(input);};
+ const pending=f.service.capture(id);await ready;f.store.setProjectArchived(id,true);f.store.setProjectArchived(id,false);release();await pending;
+ assert.equal(f.service.raw(id,'2026-10-10').turns.length,0);
+ f.reader.readThread=reader;await f.service.capture(id);assert.equal(f.service.raw(id,'2026-10-10').turns.length,1);
+});
+
+test('归档与恢复之间在途的模型结果不写入恢复后的项目',async t=>{
+ const f=await fixture(t),id=f.projects[0].id;f.add('甲项目','late-model');
+ let release,started;const ready=new Promise(resolve=>started=resolve),request=f.service.request;
+ f.service.request=async(...args)=>{started();await new Promise(resolve=>release=resolve);return request(...args);};
+ const pending=f.service.run(id,'2026-10-10');await ready;f.store.setProjectArchived(id,true);f.store.setProjectArchived(id,false);release();
+ await assert.rejects(pending,/归档状态已改变/);const p=f.store.getState().projects[0];assert.equal(p.records.length,0);assert.equal(p.requirements.length,0);assert.notEqual(p.dailyDesk.days['2026-10-10'].status,'error');
+ f.service.request=request;await f.service.run(id,'2026-10-10');assert.equal(f.store.getState().projects[0].records.length,1);
+});
 test('后台仅今日昨日收录，无 AI；完整原文与图片路径留本地',async t=>{const f=await fixture(t);f.add('甲项目','old','2026-10-08');f.add('甲项目','y','2026-10-09');f.add('甲项目','t');await f.service.allCapture();assert.equal(f.calls.length,0);assert.deepEqual(f.service.raw(f.projects[0].id,'2026-10-10').turns.map(t=>t.id),['t']);assert.equal(f.service.raw(f.projects[0].id,'2026-10-08').turns.length,0);assert.equal(f.store.getState().projects[0].dailyDesk.days['2026-10-09'].count,1);});
 test('单击一次四类产出，重复整理零请求，后续只发送增量',async t=>{const f=await fixture(t),id=f.projects[0].id;f.add('甲项目','one');await f.service.run(id);assert.equal(f.calls.length,1);const p=f.store.getState().projects[0];assert.equal(p.records.length,1);assert.equal(p.requirements.length,1);assert.equal(p.requirementConfirmations.length,1);assert.match(f.store.generateReport(id,'2026-10-10').text,/已完成提单/);assert.equal((await f.service.run(id)).skipped,true);assert.equal(f.calls.length,1);f.add('甲项目','two');await f.service.run(id);assert.deepEqual(f.calls[1].sources.map(s=>s.id),['turn:two']);assert.equal(f.store.getState().projects[0].records.length,1);});
 test('全部项目一次操作独立整理，无变化项目不发请求',async t=>{const f=await fixture(t);f.add('甲项目','a');f.add('乙项目','b');const result=await f.service.runAll();assert.equal(result.results.length,2);assert.equal(f.calls.length,2);assert.deepEqual(f.calls.map(i=>i.project),['甲项目','乙项目']);await f.service.runAll();assert.equal(f.calls.length,2);});

@@ -161,7 +161,7 @@ class RequirementService {
     Object.assign(this, { store, reader, summarizer, getModel, commit, notify, delay });
     this.jobs = new Map(); this.revision = 0; this.stopped = false;
   }
-  project(id) { return this.store.getState().projects.find(project => project.id === id); }
+  project(id) { return this.store.getState().projects.find(project => project.id === id && !project.archivedAt); }
   schedule(id, { force = false, retryFailed = false, delay = this.delay } = {}) {
     if (this.stopped || !id) return;
     let job = this.jobs.get(id);
@@ -231,7 +231,7 @@ class RequirementService {
     let config, apiKey = '', fingerprint = '', warnings = [], sourceCount = 0;
     const valid = () => {
       const current = this.project(id);
-      if (this.stopped || this.revision !== revision || !current || contextOf(current) !== contextKey || fileStamp(current, managedFolder) !== stamp) return false;
+      if (this.stopped || this.revision !== revision || !current || (current.archiveRevision || 0) !== (captured.archiveRevision || 0) || contextOf(current) !== contextKey || fileStamp(current, managedFolder) !== stamp) return false;
       if (!config) return true;
       try {
         const model = this.getModel();

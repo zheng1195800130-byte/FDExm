@@ -67,7 +67,7 @@ async function refresh(renderView=true){
   const priorProjectId=project()?.id;state=await request('state');
   const p=project();if(priorProjectId&&p?.id!==priorProjectId){fileQuery='';fileKind='';fileDate='';fileGroup='';fileTag='';}
   syncCodexDate(p);
-  $('project-select').innerHTML=state.projects.length ? state.projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join(''):'<option value="">尚未关联项目</option>';
+  $('project-select').innerHTML=state.projects.length ? state.projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join(''):'<option value="">'+(state.archivedProjects?.length?'暂无关注项目':'尚未关联项目')+'</option>';
   if(p) $('project-select').value=p.id;
   $('breadcrumb-project').textContent=p?.name||'我的项目';
   renderNavigation();
@@ -109,6 +109,7 @@ function render(){
   if(state.recoveryWarning)$('workspace').insertAdjacentHTML('afterbegin',`<div class="notice warning">${esc(state.recoveryWarning)}</div>`);
 }
 function renderWelcome(){
+  if(state.archivedProjects?.length){$('workspace').innerHTML=heading('PROJECT OVERVIEW','暂无关注项目','')+empty('项目已归档','可在管理项目中恢复查看历史记录。',actionButton('manage-projects','管理项目',null,'','primary'));return;}
   $('workspace').innerHTML=`<div class="welcome"><div class="welcome-hero"><div><div class="eyebrow">A QUIETER WAY TO WORK</div><h1>工作照常进行，<br><em>记录自然归位。</em></h1><p class="welcome-intro">关联客户资料与开发目录。让分散的信息，成为清晰的需求、工作记录和项目进度。</p>${actionButton('new-project','关联第一个项目','plus','','primary')}<p class="subtext">保留你在 Codex 中的工作习惯。</p></div><div class="welcome-art" aria-hidden="true"><div class="art-label">一个项目 · 两个目录</div><div class="art-file">${icon('files',25)}<div>原始资料<small>只读关联，随时查找</small></div></div><div class="art-file">${icon('codex',25)}<div>项目开发<small>关注成果与有效变化</small></div></div><div class="art-file">${icon('records',25)}<div>FDE 管理档案<small>资料索引、需求、每日记录</small></div></div></div></div><div class="welcome-foot"><div>${icon('search',23)}<h3>资料触手可及</h3><p>检索名称、用途和已提取正文，快速复制文件或路径。</p></div><div>${icon('records',23)}<h3>只记有效工作</h3><p>多轮处理归到同一事项，跨天保留进展，日报简洁可读。</p></div><div>${icon('flag',23)}<h3>下一步有迹可循</h3><p>看清当前阶段、剩余事项和阻塞，不用猜测完成百分比。</p></div></div></div>`;
 }
 function renderOverview(p){
@@ -286,6 +287,13 @@ function showForm(title,description,body,submit,options={}){
   setTimeout(()=>$('modal-form')?.querySelector('input:not([type=checkbox]),textarea,select')?.focus(),0);
 }
 function closeForm(){const key=$('field-apiKey');if(key)key.value='';$('form-dialog').close();modalSubmit=null;modalTest=null;if(route==='codex'&&project())render();modalReturnFocus?.focus?.();}
+function projectManagerMarkup(){
+  const group=(title,projects,archived)=>`<section class="project-manager-group"><h3>${title} · ${projects.length}</h3>${projects.length?projects.map(p=>`<div class="project-manager-row"><div><strong>${esc(p.name)}</strong><small>${esc(archived?`归档于 ${dayLabel(p.archivedAt.slice(0,10))}`:p.stage||'')}</small></div>${actionButton(archived?'restore-project':'archive-project',archived?'恢复关注':'归档',null,`type="button" data-project-id="${esc(p.id)}" aria-label="${archived?'恢复关注':'归档'} ${esc(p.name)}"`,'small')}</div>`).join(''):`<p class="muted">${archived?'暂无归档项目':'暂无关注项目'}</p>`}</section>`;
+  return group('关注中',state.projects,false)+group('已归档',state.archivedProjects||[],true);
+}
+function projectManager(){
+  showForm('管理项目','归档后停止自动收录并移出项目列表，历史资料保留，可随时恢复。',`<div id="project-manager-content">${projectManagerMarkup()}</div>`,async()=>{},{submitLabel:'完成'});
+}
 async function materialTagForm(targetId){
   const p=project(),item=[...(p.files||[]),...(p.folders||[])].find(item=>item.targetId===targetId);if(!item)throw new Error('资料已变更，请刷新');
   const evidence=(item.tags||[]).filter(t=>!t.inherited&&t.evidence);
@@ -467,6 +475,17 @@ async function handleAction(action,target){
   switch(action){
     case 'new-project':projectForm();break;
     case 'edit-project':projectForm(true);break;
+    case 'manage-projects':projectManager();break;
+    case 'archive-project':
+    case 'restore-project':{
+      const archived=action==='archive-project',projectId=target.dataset.projectId;
+      await request(archived?'project:archive':'project:restore',{id:projectId});resetOriginalConversation();await refresh();
+      if($('project-manager-content')){
+        $('project-manager-content').innerHTML=projectManagerMarkup();
+        [...$('project-manager-content').querySelectorAll('button')].find(button=>button.dataset.projectId===projectId)?.focus();
+      }
+      notify(archived?'项目已归档，历史记录保留':'项目已恢复关注');break;
+    }
     case 'close-dialog':closeForm();break;
     case 'close-preview':$('preview-dialog').close();break;
     case 'choose-directory':{const path=await request('dialog:directory');if(path)$(`field-${target.dataset.field}`).value=path;break;}

@@ -44,11 +44,11 @@ const windows = () => [main, ball, panel, ...memoWindows.values()].filter(w => w
 const broadcast = (extra = {}) => windows().forEach(w => w.webContents.send('fde:changed', extra));
 const commit = fn => { const task = queue.then(fn, fn); queue = task.catch(() => {}); return task; };
 function scanMaterials(id) {
-  project(id);
+  if (project(id).archivedAt) return Promise.reject(new Error('项目已归档，请先恢复项目'));
   if (materialScans.has(id)) return materialScans.get(id);
   // Both windows can request refresh together. Share one queued, fresh scan;
   // the ordinary local background index keeps its inexpensive metadata cache.
-  const scan = commit(() => store.scanProject(id, { force: true }));
+  const scan = commit(() => project(id).archivedAt ? project(id) : store.scanProject(id, { force: true }));
   scan.then(() => dailyDesk?.capture(id).catch(error => broadcast({warning:error.message})), () => {});
   materialScans.set(id, scan);
   const clear = () => { if (materialScans.get(id) === scan) materialScans.delete(id); };
@@ -226,7 +226,7 @@ async function dispatch(action, p, sender) {
       case 'memo-close': {
         const entry = [...memoWindows].find(([, win]) => win.webContents === sender);
         if (!entry) throw new Error('备忘录窗口不存在');
-        if (store.getState().projects.some(item => item.id === entry[0])) store.setSettings({ activeProjectId: entry[0] });
+        if (store.getState().projects.some(item => item.id === entry[0] && !item.archivedAt)) store.setSettings({ activeProjectId: entry[0] });
         showPanel(); panel.webContents.send('fde:changed', { memoTabRequested: true });
         entry[1].memoCloseConfirmed = true;
         setTimeout(() => { if (!entry[1].isDestroyed()) entry[1].close(); }, 50);
@@ -252,7 +252,7 @@ async function dispatch(action, p, sender) {
     return true;
   }
   switch (action) {
-    case 'state': { const state = store.getState(); return { ...state, projects: state.projects.map(p => ({ ...displayProject({...p,managementDir:managedPath(p.id)},state.settings.materialDisplay), managementDir: managedPath(p.id), carryover: carryover(p,localDate(new Date())) })), dataDir: DATA, modelSettings: modelSettings.public() }; }
+    case 'state': { const state = store.getState(); return { ...state, projects: state.projects.filter(p=>!p.archivedAt).map(p => ({ ...displayProject({...p,managementDir:managedPath(p.id)},state.settings.materialDisplay), managementDir: managedPath(p.id), carryover: carryover(p,localDate(new Date())) })), archivedProjects: state.projects.filter(p=>p.archivedAt).map(({id,name,stage,archivedAt})=>({id,name,stage,archivedAt})), dataDir: DATA, modelSettings: modelSettings.public() }; }
     case 'material:tags-save': {const value=store.setMaterialTags(p.id,p.targetId,p.labels);broadcast();return value;}
     case 'material:folder-open': case 'material:folder-copy-path': {
       const target=materialTags.targets({...project(p.id),managementDir:managedPath(p.id)}).find(item=>item.id===p.targetId&&item.type==='folder');if(!target)throw new Error('资料目录不存在，请刷新');
@@ -312,6 +312,8 @@ async function dispatch(action, p, sender) {
       return updated;
     }
     case 'project:select': project(p.id); return store.setSettings({ activeProjectId: p.id });
+    case 'project:archive': return store.setProjectArchived(p.id, true);
+    case 'project:restore': return store.setProjectArchived(p.id, false);
     case 'project:scan': return scanMaterials(p.id);
     case 'dialog:directory': {
       const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(sender), { title: '选择项目目录', properties: ['openDirectory'] });
@@ -413,8 +415,8 @@ function setupIPC() {
       const promise = direct ? execute() : queue.then(execute, execute);
       if (!direct) queue = promise.catch(() => {});
       const value = await promise;
-      if (['project:create', 'project:select', 'project:update', 'codex:bind'].includes(input.action)) await watchLinkedSession();
-      if (['project:create','project:update','codex:bind','file:add','file:paste','file:update'].includes(input.action)) dailyDesk.capture(input.payload?.id || value?.id).catch(error=>broadcast({warning:error.message}));
+      if (['project:create', 'project:select', 'project:update', 'project:archive', 'project:restore', 'codex:bind'].includes(input.action)) await watchLinkedSession();
+      if (['project:create','project:update','project:restore','codex:bind','file:add','file:paste','file:update'].includes(input.action)) dailyDesk.capture(input.payload?.id || value?.id).catch(error=>broadcast({warning:error.message}));
       if (/^(project:|file:(add|paste|update)|requirement:|record:|report:save|cycle:|delivery:|codex:bind|model:save|summary:rules-save)/.test(input.action)) broadcast();
       if (/^memo:(save|paste|add-image|add-images|remove-image)$/.test(input.action)) broadcast({ memoUpdated: input.payload?.id });
       return { ok: true, value };
@@ -434,7 +436,7 @@ else {
     dailyDesk = new DailyDesk({store,reader:codex,getModel:()=>({config:modelSettings.config(),apiKey:modelSettings.key()}),getRules:()=>summaryRules.read(),commit,notify:broadcast});
     sessionWatcher = new SessionWatcher({
       resolveSessions: async () => {
-        const projects = store.getState().projects.filter(proj => proj.codex.threadId);
+        const projects = store.getState().projects.filter(proj => !proj.archivedAt && proj.codex.threadId);
         const catalogs = new Map();
         const sessions = [];
         for (const proj of projects) {
@@ -453,7 +455,7 @@ else {
     // A single startup scan picks up material edits made while the app was
     // closed. Start session subscriptions afterwards so their bootstrap cannot
     // summarize a stale cached preview before the fresh scan has committed.
-    const startupScans = store.getState().projects.map(proj => scanMaterials(proj.id).then(
+    const startupScans = store.getState().projects.filter(proj=>!proj.archivedAt).map(proj => scanMaterials(proj.id).then(
       () => broadcast(),
       error => { broadcast({ warning: `${proj.name}：${error.message}` }); },
     ));
@@ -470,7 +472,7 @@ else {
         const id = store.getState().settings.activeProjectId;
         if (!id || scanBusy) return;
         scanBusy = true;
-        queue = queue.then(() => store.scanProject(id)).then(() => broadcast(), error => broadcast({ warning: error.message })).finally(() => { scanBusy = false; });
+        queue = queue.then(() => project(id).archivedAt ? undefined : store.scanProject(id)).then(() => broadcast(), error => broadcast({ warning: error.message })).finally(() => { scanBusy = false; });
       }, 60000);
       timer.unref();
     }

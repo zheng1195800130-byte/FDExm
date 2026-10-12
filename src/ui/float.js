@@ -6,7 +6,7 @@ const scans=new Map(),folders=new Map();let tag='',loadedProjectId='';
 const $=id=>document.getElementById(id);
 const memo=createMemoController();
 $('pin').innerHTML=icon('pin',16);$('collapse').innerHTML=icon('ball',17);$('search-icon').innerHTML=icon('search',16);
-async function load(){const version=++loadVersion,next=await request('state');if(version!==loadVersion)return;state=next;const p=currentProject(state);if(loadedProjectId&&loadedProjectId!==p?.id){query='';group='';tag='';$('float-search').value='';$('float-group').value='';}loadedProjectId=p?.id||'';$('float-project').innerHTML=state.projects?.length?state.projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join(''):'<option value="">尚未关联项目</option>';if(p)$('float-project').value=p.id;renderFiles();renderScanStatus();await memo.setProject(p,state.dataDir||'');}
+async function load(){const version=++loadVersion,next=await request('state');if(version!==loadVersion)return;state=next;const p=currentProject(state);if(loadedProjectId&&loadedProjectId!==p?.id){query='';group='';tag='';$('float-search').value='';$('float-group').value='';}loadedProjectId=p?.id||'';$('float-project').innerHTML=state.projects?.length?state.projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join(''):'<option value="">'+(state.archivedProjects?.length?'暂无关注项目':'尚未关联项目')+'</option>';if(p)$('float-project').value=p.id;renderFiles();renderScanStatus();await memo.setProject(p,state.dataDir||'');}
 function renderScanStatus(){
   const p=currentProject(state),scan=scans.get(p?.id)||{},busy=!!scan.running,button=$('float-refresh');
   button.disabled=!p||busy;button.setAttribute('aria-busy',String(busy));button.innerHTML=icon('refresh',14)+(busy?'刷新中…':'刷新');
