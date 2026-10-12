@@ -1,7 +1,7 @@
 'use strict';
 
 // Isolated desktop acceptance. Text/paste events, PNG decoding and managed
-// files are real; the OS clipboard, image picker and Explorer are mocked.
+// files are real; the OS clipboard, image picker, image viewer and Explorer are mocked.
 const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -117,7 +117,7 @@ async function run() {
       if (typeof clipboard.readImage === 'function') clipboard.readImage = () => { state.readCalls++; return state.clipboardPng ? nativeImage.createFromBuffer(Buffer.from(state.clipboardPng, 'base64')) : nativeImage.createEmpty(); };
       if (typeof clipboard.writeImage === 'function') clipboard.writeImage = image => state.copiedImages.push({ type: 'image/png', bytes: image.toPNG().length, empty: image.isEmpty(), size: image.getSize(), base64: image.toPNG().toString('base64') });
       shell.showItemInFolder = file => { state.reveals.push(file); };
-      shell.openPath = async file => { state.opens.push(file); return ''; };
+      shell.openPath = async file => { state.opens.push(file); return state.openError || ''; };
       dialog.showOpenDialog = async () => { state.pickerCalls++; return { canceled: false, filePaths: [input.pickerImage] }; };
       for (const window of BrowserWindow.getAllWindows()) {
         const url = window.webContents.getURL();
@@ -205,6 +205,34 @@ async function run() {
     const firstImage = (await memo(a.id)).images[0];
     await eventually(async () => await card(firstImage.id).locator('img.memo-image-preview').evaluate(image => image.complete && image.naturalWidth > 0), '图片预览未显示');
     check(firstImage.width === 2 && firstImage.height === 2 && (await memo(a.id)).text === textWithPaste, '截图经真实 PNG 解码持久保存并显示预览，文字保留');
+    const firstPreview = await request('memo:preview', { id: a.id, imageId: firstImage.id }), beforePreview = JSON.stringify(await memo(a.id));
+    const thumbnail = card(firstImage.id).locator('img.memo-image-preview');
+    await thumbnail.click();
+    check((await control()).opens.length === 0, '单击缩略图不误打开系统查看器');
+    await thumbnail.dblclick();
+    await eventually(async () => (await control()).opens.length === 1, '双击图片未调用系统预览');
+    check((await control()).opens[0] === firstPreview.path, '双击悬浮图片打开已保存的 PNG 原图，不打开缩略图或原始资料目录');
+    await thumbnail.focus(); await thumbnail.press('Enter');
+    await eventually(async () => (await control()).opens.length === 2, '键盘无法预览图片');
+    check((await control()).opens[1] === firstPreview.path && JSON.stringify(await memo(a.id)) === beforePreview, 'Enter 可预览，预览不改写备忘录文字图片或保存版本');
+    await thumbnail.press('Space');
+    await eventually(async () => (await control()).opens.length === 3, '空格无法预览图片');
+    check((await control()).opens[2] === firstPreview.path, '空格键同样可预览图片');
+    await app.evaluate(() => { globalThis.__fdeMemoSmoke.openError = '隔离查看器不可用'; });
+    await thumbnail.dblclick();
+    await eventually(async () => (await panel.locator('#toast').innerText()).includes('无法预览图片'), '查看器失败没有提示');
+    check((await panel.locator('#toast').innerText()).includes('隔离查看器不可用') && JSON.stringify(await memo(a.id)) === beforePreview, '系统查看器打开失败明确提示且不影响保存内容');
+    await app.evaluate(() => { globalThis.__fdeMemoSmoke.openError = ''; });
+    let rejectedOpens = 0;
+    for (const payload of [{ id: b.id, imageId: firstImage.id }, { id: a.id, imageId: '../store.json' }]) {
+      try { await request('memo:open-image', payload); } catch { rejectedOpens++; }
+    }
+    check(rejectedOpens === 2 && (await control()).opens.length === 4, '预览拒绝跨项目编号和越界路径，不传给系统查看器');
+    await fs.rename(firstPreview.path, firstPreview.path + '.test-missing');
+    let missingRejected = false;
+    try { await request('memo:open-image', { id: a.id, imageId: firstImage.id }); } catch { missingRejected = true; }
+    finally { await fs.rename(firstPreview.path + '.test-missing', firstPreview.path); }
+    check(missingRejected && (await control()).opens.length === 4 && JSON.stringify(await memo(a.id)) === beforePreview, '原图丢失时明确拒绝预览，保留备忘录记录');
 
     const pendingA = `${textWithPaste}\n切换项目之前的最新输入。`;
     await panel.locator('#memo-text').fill(pendingA); await selectProject(b.id);
@@ -271,6 +299,12 @@ async function run() {
     expanded.on('request',pending=>{if(/^https?:/i.test(pending.url()))imageNetworkRequests.push(pending.url());});
     check(await expanded.locator('#memo-text').inputValue()===collapsedText && (await memo(a.id)).text===collapsedText,'扩大前立即保存最新文字，大窗口回读同一项目内容');
     check(await expanded.locator('#memo-project-name').innerText()===a.name && await expanded.locator('.memo-image-card').count()===2,'大窗口展示对应项目名和原有图片');
+    const expandedThumbnail = expanded.locator(`.memo-image-card[data-image="${firstImage.id}"] img.memo-image-preview`);
+    await expandedThumbnail.waitFor();
+    const opensBeforeExpanded = (await control()).opens.length;
+    await expandedThumbnail.dblclick();
+    await eventually(async () => (await control()).opens.length === opensBeforeExpanded + 1, '扩大备忘录双击图片未打开');
+    check((await control()).opens.at(-1) === firstPreview.path, '扩大备忘录窗口同样可双击预览原图');
     check(await expanded.locator('#float-project,.sidebar,.float-tabs,.float-footer').count()===0,'大窗口只展示备忘录，没有资料检索或工作台菜单');
     const sizes=await app.evaluate(({BrowserWindow,screen})=>{
       const main=BrowserWindow.getAllWindows().find(w=>w.webContents.getURL().endsWith('/index.html'));
@@ -384,7 +418,7 @@ async function run() {
       projectCount: projects.length, imageCount: finalMemo.images.length, memoRevision: finalMemo.revision,
       clipboard: { textCopies: boundaries.copiedTexts.length, imageCopies: boundaries.copiedImages.length, reads: boundaries.readCalls },
       pickerCalls: boundaries.pickerCalls, revealCalls: boundaries.reveals.length, networkRequests: imageNetworkRequests.length, realStoreUnchanged: true,
-      boundary: '真实双窗、renderer ClipboardEvent、PNG 解码、磁盘和草稿重启恢复；仅 Electron 系统剪贴板、图片选择器、Explorer 及临时保存失败边界使用 mock。未操作用户剪贴板，未访问真实客户正文、Codex 会话或模型密钥。',
+      boundary: '真实双窗、renderer ClipboardEvent、PNG 解码、磁盘和草稿重启恢复；仅 Electron 系统剪贴板、图片选择器、系统图片查看器、Explorer 及临时保存失败边界使用 mock。未操作用户剪贴板，未访问真实客户正文、Codex 会话或模型密钥。',
     };
     await fs.writeFile(reportPath, JSON.stringify(report, null, 2));
     console.log(JSON.stringify({ status: report.status, mode: report.mode, checkCount: checks.length, projectCount: projects.length, imageCount: finalMemo.images.length, realStoreUnchanged: true, report: reportPath, screenshot, boundary: report.boundary }));

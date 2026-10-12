@@ -155,7 +155,7 @@ export function createMemoController(){
     if(signature===imageSignature)return;imageSignature=signature;observer.disconnect();
     $('memo-images').innerHTML=entry.memo.images.length?entry.memo.images.map(image=>{
       const preview=entry.previews.get(image.id),disabled=entry.operationCount?' disabled':'';
-      return `<article class="memo-image-card" data-image="${esc(image.id)}" data-memo-key="${esc(entry.key)}"><div class="memo-image-name" title="${esc(image.name)}">${esc(image.name)}</div>${preview?.status==='ready'?`<img class="memo-image-preview" src="${esc(preview.dataUrl)}" alt="${esc(image.name)}" loading="lazy">`:`<div class="memo-image-placeholder">${preview?.status==='error'?'预览暂不可用':'正在读取图片…'}</div>`}<div class="memo-image-actions"><button class="btn small" data-memo-action="copy-image" data-image="${esc(image.id)}"${disabled}>复制图片</button><button class="btn small" data-memo-action="reveal-image" data-image="${esc(image.id)}"${disabled}>打开目录</button><button class="link-btn" data-memo-action="remove-image" data-image="${esc(image.id)}"${disabled}>移除</button></div></article>`;
+      return `<article class="memo-image-card" data-image="${esc(image.id)}" data-memo-key="${esc(entry.key)}"><div class="memo-image-name" title="${esc(image.name)}">${esc(image.name)}</div>${preview?.status==='ready'?`<img class="memo-image-preview" src="${esc(preview.dataUrl)}" alt="${esc(image.name)}" loading="lazy" role="button" tabindex="0" aria-label="预览图片：${esc(image.name)}" title="双击预览图片，或按 Enter 打开">`:`<div class="memo-image-placeholder">${preview?.status==='error'?'预览暂不可用':'正在读取图片…'}</div>`}<div class="memo-image-actions"><button class="btn small" data-memo-action="copy-image" data-image="${esc(image.id)}"${disabled}>复制图片</button><button class="btn small" data-memo-action="reveal-image" data-image="${esc(image.id)}"${disabled}>打开目录</button><button class="link-btn" data-memo-action="remove-image" data-image="${esc(image.id)}"${disabled}>移除</button></div></article>`;
     }).join(''):'<div class="memo-image-empty">截图和图片会保存在这里</div>';
     for(const card of $('memo-images').querySelectorAll('.memo-image-card'))if(!entry.previews.has(card.dataset.image))observer.observe(card);
   }
@@ -185,6 +185,23 @@ export function createMemoController(){
     const url=link.getAttribute('href');if(url)try{await request('link:open',{url});}catch(error){notify(message(error),true);}
   }
   $('memo-preview').addEventListener('click',openMarkdownLink);$('memo-preview').addEventListener('auxclick',openMarkdownLink);
+  let openingImage=false;
+  async function openImage(event){
+    const image=event.target.closest('img.memo-image-preview'),entry=active();
+    if(!image||!entry||openingImage)return;
+    if(event.type==='keydown'){
+      if(!['Enter',' '].includes(event.key))return;
+      event.preventDefault();if(event.repeat)return;
+    }
+    const card=image.closest('.memo-image-card');
+    if(!card||card.dataset.memoKey!==entry.key)return;
+    openingImage=true;
+    try{await request('memo:open-image',{id:entry.id,imageId:card.dataset.image});}
+    catch(error){notify(message(error),true);}
+    finally{openingImage=false;}
+  }
+  $('memo-images').addEventListener('dblclick',openImage);
+  $('memo-images').addEventListener('keydown',openImage);
   $('memo-images').addEventListener('click',async event=>{
     const button=event.target.closest('[data-memo-action][data-image]'),entry=active();if(!button||button.disabled||!entry)return;
     const imageId=button.dataset.image,action=button.dataset.memoAction;

@@ -95,6 +95,12 @@ function createMemoActions({ memos, clipboard, ClipboardItem, nativeImage, dialo
         return { name: entry.name, path: imagePath, dataUrl: image.resize({ width: Math.min(image.getSize().width, 1000) }).toDataURL() };
       }
       case 'memo:copy-text': memos.get(p.id); await clipboard.writeText(text(p.text)); return true;
+      case 'memo:open-image': {
+        const imagePath = memos.imagePath(p.id, p.imageId);
+        const error = await shell.openPath(imagePath);
+        if (error) throw new Error(`无法预览图片：${error}`);
+        return true;
+      }
       case 'memo:copy-image': {
         const { image } = await imageFor(p.id, p.imageId);
         if (typeof clipboard.writeImage === 'function') await clipboard.writeImage(image);
