@@ -35,7 +35,16 @@ async function run(){
   const cached=JSON.stringify(await raw(a.id)),before=JSON.stringify((await current()).dailyDesk);await fs.appendFile(paths[0],rows(a.id,a.devDir,'after-click'));await pause(1800);check(JSON.stringify(await raw(a.id))===cached&&JSON.stringify((await current()).dailyDesk)===before,'新对话不改写已保存收录与结果');
   const reads=(await readerCounts()).length;await route('codex');await page.locator('#codex-original summary').click();await until(async()=> (await page.locator('#codex-turns').innerText()).includes('before-click'),'已保存原文未载入');check(!(await page.locator('#codex-turns').innerText()).includes('after-click')&&(await readerCounts()).length===reads,'原文缓存不偷读最新对话');
   await clickCurrent();check(inputs.length===3,'下一次点击才处理新增对话');check(inputs[2].sources.filter(s=>s.id.startsWith('turn:')).every(s=>s.id==='turn:after-click'),'仅新增当日片段发送模型');
-  await fs.appendFile(paths[0],rows(a.id,a.devDir,'retry-work'));invalid=true;await clickCurrent();check((await current()).dailyDesk.days[DATE].status==='error','无效模型结果失败可见');check((await current()).dailyDesk.overview.progress.includes('3'),'失败保留上次成功结果');invalid=false;await clickCurrent();check(inputs.length===5&&(await current()).dailyDesk.days[DATE].status==='ready','重试仍只用概览入口补失败增量');
+  await fs.appendFile(paths[0],rows(a.id,a.devDir,'retry-work'));invalid=true;await clickCurrent();check((await current()).dailyDesk.days[DATE].status==='error','无效模型结果失败可见');check((await current()).dailyDesk.overview.progress.includes('3'),'失败保留上次成功结果');
+  check((await page.locator('.daily-inline-status').innerText()).includes('本次整理未完成'),'概览仍展示整理失败原因');
+  for(const name of ['requirements','records','reports']){
+   await route(name);const content=await page.locator('#workspace').innerText();
+   check(await page.locator('.daily-page-status,.requirement-analysis').count()===0&&!content.includes('本次整理未完成'),`${name} 无重复整理状态栏`);
+   check(content.includes(name==='requirements'?'支持字段编辑':'完成当日处理'),`${name} 失败后仍展示已保存内容`);
+   if(name==='requirements')await page.screenshot({path:path.join(output,'manual-sync-requirements.png')});
+  }
+  check(inputs.length===4&&(await current()).dailyDesk.days[DATE].status==='error','查看三页不请求模型或清除失败状态');
+  invalid=false;await clickCurrent();check(inputs.length===5&&(await current()).dailyDesk.days[DATE].status==='ready','重试仍只用概览入口补失败增量');
   await page.screenshot({path:path.join(output,'manual-sync-overview.png')});
   const snapshot=JSON.stringify(await raw(a.id));await fs.appendFile(paths[0],rows(a.id,a.devDir,'after-restart'));await app.close();app=null;await launch();await pause(700);check(JSON.stringify(await raw(a.id))===snapshot&&inputs.length===5,'重启不补抓未整理的新对话');check((await current()).codex.threadId===a.id,'重启保留会话入口，无需重新确认');
   const cSource=path.join(dir,'首次关联','资料'),cDev=path.join(dir,'首次关联','开发'),cThread=require('node:crypto').randomUUID();await fs.mkdir(cSource,{recursive:true});await fs.mkdir(cDev,{recursive:true});await fs.writeFile(path.join(home,'sessions',...DATE.split('-'),`rollout-${cThread}.jsonl`),rows(cThread,cDev,'first-link'));
