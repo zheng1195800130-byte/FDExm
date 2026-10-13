@@ -62,12 +62,12 @@ test('确认问题不会冒充已明确需求，失败仅写状态并保留清�
   assert.throws(()=>f.store.setRequirementAnalysis(f.p.id,{status:{state:'anything'}}),/状态/);
   assert.deepEqual(f.current().requirements,before);
 });
-test('目录与会话变化只清理分析检查点，保留业务需求和人工删除标记',t=>{
+test('同目录换会话保留分析检查点、业务需求和人工删除标记，旧入口结果仍拒绝',t=>{
   const f=fixture(t);apply(f,[item('keep'),item('removed')]);
   f.store.removeRequirement(f.p.id,f.current().requirements.find(i=>i.requirementKey==='removed').id);
   f.store.bindCodexThread(f.p.id,{threadId:'new-conversation'});
   const result=f.current();assert.equal(result.requirements.length,1);assert.equal(result.requirements[0].requirementKey,'keep');
-  assert.deepEqual(result.requirementAnalysis.dismissedKeys,['removed']);assert.equal(result.requirementAnalysis.fingerprint,undefined);
+  assert.deepEqual(result.requirementAnalysis.dismissedKeys,['removed']);assert.equal(result.requirementAnalysis.fingerprint,'content-hash');
   assert.throws(()=>apply(f,[item('wrong')]),/会话已变化/);
   assert.equal(f.current().requirements.length,1);
 });
@@ -182,16 +182,23 @@ test('需求及确认来源时间累积，Markdown上海日期时分且视图截
   const base=f.store.projectFolder(f.p.id),before=f.current();
   f.store.setRequirementFilter(f.p.id,'2026-10-09T05:00:00+08:00');
   assert.equal(f.current().requirementsAfter,'2026-10-08T21:00:00.000Z');
+  assert.equal(f.current().requirementsDateMode,'date');
   assert.deepEqual(f.current().requirements,before.requirements);assert.deepEqual(f.current().requirementConfirmations,before.requirementConfirmations);
   const markdown=fs.readFileSync(path.join(base,'需求清单.md'),'utf8');
   assert.match(markdown,/2026-10-09 00:25/);assert.match(markdown,/2026-10-09 09:45/);assert.match(markdown,/2026-10-09 10:15/);
   assert.doesNotMatch(markdown,/T02:15:00/);assert.match(markdown,/需求确认（含已解决历史）/);assert.match(markdown,/当前先用 Excel/);
   const standalone=fs.readFileSync(path.join(base,'需求确认.md'),'utf8');assert.match(standalone,/2026-10-09 10:15/);
   assert.throws(()=>f.store.setRequirementFilter(f.p.id,'2026-10-09'),/ISO/);f.store.setRequirementFilter(f.p.id,'');assert.equal(f.current().requirementsAfter,'');
+  assert.equal(f.current().requirementsDateMode,'all');
+  f.store.setRequirementFilter(f.p.id,'','today');assert.equal(f.current().requirementsDateMode,'today');
+  assert.throws(()=>f.store.setRequirementFilter(f.p.id,'','date'),/筛选无效/);
+  assert.throws(()=>f.store.setRequirementFilter(f.p.id,'','unknown'),/筛选无效/);
+  assert.deepEqual(new Store(f.store.dataDir).getState().projects[0].requirements,before.requirements);
 });
 
 test('旧档案缺少确认清单与日期仍可加载，不制造历史时间',t=>{
   const f=fixture(t),state=f.store.getState();delete state.projects[0].requirementConfirmations;delete state.projects[0].requirementsAfter;
   fs.writeFileSync(f.store.statePath,JSON.stringify(state));const reloaded=new Store(f.store.dataDir).getState().projects[0];
   assert.deepEqual(reloaded.requirementConfirmations,[]);assert.equal(reloaded.requirementsAfter,'');
+  assert.equal(reloaded.requirementsDateMode,'today');
 });

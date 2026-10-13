@@ -9,8 +9,8 @@ function materialOnly(item) {
 function workReport(name, items) {
   const short=(text,max)=>String(text||'').replace(/\d+\s*项[^，。；]*(?:测试|验证)[^，。；]*通过[，。；]?/g,'').replace(/\s+/g,' ').trim().replace(/[。；;]+$/,'').slice(0,max);
   const rows=items.filter(item=>item.manual||item.confirmed||!materialOnly(item)).map(item=>{
-    const title=short(item.title,100),action=short(item.action,180),result=short(item.result,180);
-    return `${title}${action&&action!==title?'：'+action:''}${result&&result!==action?'；'+result:''}。`;
+    const title=short(item.title,100),cause=short(item.cause,180),action=short(item.action,180),result=short(item.result,180);
+    return `${cause&&cause!==title?`针对${cause}，`:''}${title}${action&&action!==title?'：'+action:''}${result&&result!==action?'；'+result:''}。`;
   });
   return rows.length?`${name}——${rows.join('\n\n')}`:'';
 }

@@ -17,6 +17,7 @@ const { SummaryRules } = require('../src/core/summary-rules.cjs');
 const { normalizePreset, LIMITS: PRESET_LIMITS } = require('../src/core/summary-preset.cjs');
 const { externalUrl } = require('../src/core/external-links.cjs');
 const { ModelSettings } = require('./model-settings.cjs');
+const { createModelSecretStorage } = require('./model-secret-storage.cjs');
 const { prepareDataDirectory } = require('./data-migration.cjs');
 const { MemoStore } = require('../src/core/memos.cjs');
 const { createMemoActions } = require('./memo-actions.cjs');
@@ -353,7 +354,7 @@ async function dispatch(action, p, sender) {
     case 'requirement:save': return store.upsertRequirement(p.id, p.input);
     case 'requirement:remove': return store.removeRequirement(p.id, p.requirementId);
     case 'requirement:confirmation-save': return store.upsertRequirementConfirmation(p.id, p.input);
-    case 'requirement:filter': return store.setRequirementFilter(p.id, p.after);
+    case 'requirement:filter': return store.setRequirementFilter(p.id, p.after, p.mode);
     case 'record:save': return store.upsertRecord(p.id, p.input);
     case 'record:remove': return store.removeRecord(p.id, p.recordId);
     case 'report:generate': return store.generateReport(p.id, p.date);
@@ -378,7 +379,7 @@ async function dispatch(action, p, sender) {
       const proj = project(p.id);
       if (!proj.codex.threadId) throw new Error('请先关联本项目的 Codex 会话');
       const raw = dailyDesk.raw(p.id,p.date || localDate(new Date()));
-      const value = raw.threadId === proj.codex.threadId ? raw : {turns:[],date:p.date || localDate(new Date())};
+      const value = raw.cwd ? materialTags.canonical(raw.cwd) === materialTags.canonical(proj.devDir) ? raw : {turns:[],date:p.date || localDate(new Date())} : raw.threadId === proj.codex.threadId ? raw : {turns:[],date:p.date || localDate(new Date())};
       return { ...value, cached:true, truncated:!!value.partial, drafts: codex.extractDrafts(value.turns) };
     }
     case 'clipboard:text': {
@@ -422,7 +423,7 @@ else {
   app.whenReady().then(() => {
     store = new Store(DATA);
     memoActions = createMemoActions({ memos: new MemoStore({ projectFolder: managedPath }), clipboard, ClipboardItem, nativeImage, dialog, shell, windowForSender: sender => BrowserWindow.fromWebContents(sender) });
-    modelSettings = new ModelSettings({ dataDir: DATA, store, safeStorage });
+    modelSettings = new ModelSettings({ dataDir: DATA, store, safeStorage: createModelSecretStorage({ dataDir: DATA, safeStorage }) });
     summaryRules = new SummaryRules({ dataDir: DATA });
     summaryService = new SummaryService({ store, reader: codex, summarizer, getModel: () => ({ config: modelSettings.config(), apiKey: modelSettings.key() }), getRules: () => summaryRules.read(), commit, notify: broadcast, delay: process.env.FDE_TEST === '1' ? 100 : 5000 });
     requirementService = new RequirementService({ store, reader: codex, summarizer: requirementSummarizer, getModel: () => ({ config: modelSettings.config(), apiKey: modelSettings.key() }), commit, notify: broadcast, delay: process.env.FDE_TEST === '1' ? 100 : 5000 });

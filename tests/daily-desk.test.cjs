@@ -30,6 +30,26 @@ test('整理预设仅在人工整理的增量请求使用，保存或改风格�
 });
 test('上海日期按零点切换',()=>{assert.equal(localDate('2026-10-10T15:59:59Z'),'2026-10-10');assert.equal(localDate('2026-10-10T16:00:00Z'),'2026-10-11');});
 
+test('整体概览与当天背景分别约束，输入包含人工项目阶段，日报保留模型的背景',async t=>{
+ const f=await fixture(t),id=f.projects[0].id;
+ f.store.updateProject(id,{stage:'客户测试',nextAction:'确认正式交付范围'});
+ f.add('甲项目','context','2026-10-10','测试用户新增的生成导入表格需求，按客户标准价格核对发现空金额取值错误');
+ f.service.request=async(_c,_k,m)=>{
+  const input=JSON.parse(m[1].content);assert.equal(input.projectContext.stage,'客户测试');assert.equal(input.projectContext.nextAction,'确认正式交付范围');
+  assert.match(m[0].content,/整个项目的长期摘要/);assert.match(m[0].content,/不要只罗列/);assert.match(m[0].content,/不能编造客户需求/);
+  return {overview:{scene:'账单核对与费用导入',requirements:'生成核对结果和导入表',progress:'核心功能进入用户测试',nextAction:'完成测试并确认交付',blocker:''},items:[{issueKey:'import',title:'修复导入金额',cause:'测试新增导入需求，按客户标准价格发现空金额异常',action:'修正金额来源',result:'已修复待用户验证',sourceIds:['turn:context']}],requirements:[],confirmations:[],reportIssueKeys:['import'],reportText:'甲项目——测试用户新增的生成导入表格需求时，按客户标准价格核对发现空金额异常；已修正金额来源，待用户验证。'};
+ };
+ await f.service.run(id);const report=f.store.generateReport(id,'2026-10-10');assert.match(report.text,/测试用户新增/);assert.match(report.text,/按客户标准价格/);assert.match(report.text,/待用户验证/);
+});
+
+test('日报覆盖不全时，本地补全仍带问题前提，不编造背景或计入资料',()=>{
+ const {organizedReport,workReport}=require('../src/core/daily-report.cjs');
+ const items=[{issueKey:'import',title:'修复导入金额',cause:'测试新增导入需求时发现空金额异常',action:'调整取值',result:'已修复待验证',sourceIds:['turn:a']},{issueKey:'bill',title:'核对欧洲账单',cause:'标准价格与分摊结果存在差异',result:'改为人工确认',sourceIds:['turn:b']},{issueKey:'file',title:'读取标准表',sourceIds:['file:price:1']}];
+ const text=organizedReport('账单',{items,reportText:'只写导入'},{reportIssueKeys:['import']},{hasTurns:true});
+ assert.match(text,/测试新增导入需求时发现空金额异常/);assert.match(text,/标准价格与分摊结果存在差异/);assert.match(text,/人工确认/);assert.doesNotMatch(text,/读取标准表|只写导入/);
+ assert.equal(workReport('账单',[{title:'修复金额',result:'待验证',sourceIds:['turn:a']}]),'账单——修复金额；待验证。');
+});
+
 test('手动整理只读取指定当日对话，不补读昨日或无日期历史',async t=>{
  const f=await fixture(t),id=f.projects[0].id,reads=[],read=f.reader.readThread;
  f.reader.readThread=async input=>{reads.push(input);return read(input);};f.add('甲项目','yesterday','2026-10-09');f.add('甲项目','today');

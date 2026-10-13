@@ -47,5 +47,13 @@
 .project-manager-row small{display:block;margin-top:5px;color:var(--muted,#70847c)}
 .project-manager-row button{flex-shrink:0}
 
+/* Model settings is available on every workspace page, beside the date. */
+.topbar-right{flex-shrink:0}.topbar-model-settings{min-height:44px;white-space:nowrap}
+
 /* Project action stays beside the title and wraps on smaller windows. */
 .page-heading:has(.heading-title-row)>div:first-child{min-width:0}.page-heading:has(.heading-title-row)>.heading-actions{flex-shrink:0}.heading-title-row{display:flex;align-items:center;flex-wrap:wrap;gap:12px 20px}.heading-title-row h1{margin:0;overflow-wrap:anywhere}.heading-title-row .overview-organize{min-height:44px;padding:10px 20px;font-size:14px;font-weight:600;flex-shrink:0}
+
+/* Requirements share one vertical reading order in both date and all views. */
+.requirement-section .requirement-section-head{margin-bottom:0}.requirement-list{display:block}.requirement-list .requirement-card{border:0;border-radius:0;box-shadow:none;padding:20px 0;border-bottom:1px solid var(--line);background:transparent}.requirement-list .requirement-card:first-child{padding-top:0}.requirement-list .requirement-card:last-child{padding-bottom:0;border-bottom:0}.requirement-list .requirement-card .card-bottom{border:0;padding-top:0;margin-top:8px}.requirement-list .requirement-card .description{white-space:pre-wrap;overflow-wrap:anywhere}.requirement-scroll{max-height:min(65vh,680px);overflow-y:auto;scrollbar-gutter:stable;scroll-padding:16px}.requirement-scroll:focus-visible{outline:2px solid var(--primary);outline-offset:3px}.requirement-time-filter{margin-bottom:22px}.requirement-time-filter .btn.active{background:var(--primary-soft,#dfede4);color:var(--primary);border-color:var(--primary)}.requirement-time-filter #requirement-undated{margin-left:auto;font-size:12px}.requirement-questions .requirement-confirmation:first-child{padding-top:0}
+
+.requirement-list .requirement-head>.actions{flex:0 0 auto;gap:16px}.requirement-list .requirement-head .link-btn{font-size:11px}.requirement-list .requirement-card .description{margin:9px 0}.requirement-list .requirement-source-brief{margin-top:8px}

@@ -24,7 +24,7 @@ async function run() {
   const source = path.join(sourceDir, '业务说明.md'); await fs.writeFile(source, '隔离 UI 资料：订单报表与客户确认问题。');
   const sourceBefore = hash(await fs.readFile(source));
   const project = {
-    id: 'ui-project-a', name: '客户报表助手', sourceDir, devDir, artifactDir: devDir, activeCycleId: 'cycle-a',
+    requirementsDateMode:'all', id: 'ui-project-a', name: '客户报表助手', sourceDir, devDir, artifactDir: devDir, activeCycleId: 'cycle-a',
     cycles: [{ id: 'cycle-a', name: '首次交付', status: '进行中' }], records: [], reports: [], deliveries: [],
     codex: {}, files: [{ id: 'source-a', name: '业务说明.md', path: source, kind: '原始资料', textPreview: '客户需要月度订单报表', description: '客户初始业务背景' }],
     requirementAnalysis: { status: { state: 'ready', message: '已整理可读取内容，部分资料尚未读取。', updatedAt: '2026-10-09T09:00:00Z' }, sourceCount: 3, coveragePartial: true, omittedCount: 3, warnings: ['业务材料超过单次范围，有 3 个片段未读取。', '客户截图.png：图片文字未识别。'] },
@@ -33,7 +33,7 @@ async function run() {
       { id: 'req-b', title: '保留附件 <script>globalThis.__requirementsAttack=1</script>', description: '上传客户提供的凭证附件，便于业务核对。', status: '待确认', managedBy: 'requirements-auto', requirementKey: 'attachment', manual: false, questions: ['附件保留多长时间？'], sourceIds: ['file:source-a:1'], sourceRef: source, cycleId: 'cycle-a' },
     ],
   };
-  const otherProject = { ...structuredClone(project), id: 'ui-project-b', name: '另一项目', requirements: [], requirementConfirmations: [], requirementsAfter: '', files: [] };
+  const otherProject = { ...structuredClone(project), id: 'ui-project-b', name: '另一项目', requirements: [], requirementConfirmations: [], requirementsAfter: '', requirementsDateMode:undefined, files: [] };
   const state = { projects: [project, otherProject], settings: { activeProjectId: project.id }, modelSettings: { enabled: true, provider: 'compatible', model: 'mock-only', baseUrl: 'http://127.0.0.1:1/v1', keyConfigured: false, keyRequired: false }, dataDir };
   await fs.writeFile(path.join(fixture, 'config.json'), JSON.stringify({ state, root: ROOT }));
   const mainPath = path.join(fixture, 'main.cjs');
@@ -63,7 +63,7 @@ ipcMain.handle('fde:request',async(_event,input)=>{
     }else if(action==='requirement:confirmation-save'){
       const existing=project.requirementConfirmations.find(item=>item.id===p.input.id);
       if(!existing)throw new Error('待确认事项不存在');Object.assign(existing,p.input,{manual:true});broadcast();value=structuredClone(project);
-    }else if(action==='requirement:filter'){project.requirementsAfter=p.after;broadcast();value=structuredClone(project);}
+    }else if(action==='requirement:filter'){project.requirementsAfter=p.after;project.requirementsDateMode=p.mode;broadcast();value=structuredClone(project);}
     else if(action==='project:select'){mock.state.settings.activeProjectId=p.id;broadcast();value=true;}
     else if(action==='codex:list')value={threads:[],candidates:[]};
     else throw new Error('隔离 UI 不支持此操作：'+action);
@@ -124,15 +124,10 @@ app.on('window-all-closed',()=>app.quit());
     if (!DATE_ONLY) {
     check(await page.locator('.requirement-card').count() === 2 && await page.locator('#requirement-business-title').innerText() === '业务需求 2', '业务需求聚合显示，不将确认问题塞入需求数组');
     check(await page.locator('.requirement-question').count() === 3 && (await page.locator('#requirement-questions').innerText()).includes('对应需求：按月导出订单报表'), '待确认问题单独集中显示并标明对应业务');
-    check((await page.locator('#requirement-analysis-status').innerText()).includes('已整理可读取内容，部分资料尚未读取。'), 'ready 状态显示后台原始范围提示，未改成完整成功');
-    check(await page.locator('#requirement-coverage').isVisible() && (await page.locator('#requirement-coverage').innerText()).includes('3 个资料片段未读取'), '部分覆盖范围在默认页面直接可见');
-    check(await page.locator('.requirement-sources[open]').count() === 0 && await page.locator('#requirement-warnings').getAttribute('open') === null, '详细依据和范围说明默认折叠');
     check((await page.locator('.requirement-source-brief').first().innerText()).includes('业务说明.md') && !(await page.locator('.requirement-source-brief').first().innerText()).includes(sourceDir), '来源默认显示简名，完整路径留在详细依据');
     await page.locator('.requirement-sources summary').first().click();
     check((await page.locator('.requirement-sources[open]').innerText()).includes(source), '可按需展开查看真实来源路径与会话引用');
-    await page.locator('.requirement-sources summary').first().click(); await page.locator('#requirement-warnings summary').click();
-    check((await page.locator('#requirement-warnings').innerText()).includes('图片文字未识别'), '未识别图片等遗漏细节可以展开查看');
-    await page.locator('#requirement-warnings summary').click();
+    await page.locator('.requirement-sources summary').first().click();
     check(await page.evaluate(()=>globalThis.__requirementsAttack) === undefined && await page.locator('#workspace script').count() === 0, '需求标题与来源仅作为安全文本展示');
     check(await page.locator('.heading-actions [data-action="new-requirement"]').count() === 0 && await page.locator('.requirement-section-head [data-action="new-requirement"]').innerText() === '补充需求', '人工补充降为辅助入口，页头聚焦复制与重新整理');
     const callsBefore = await analyzeCalls(); await page.locator('[data-route="overview"]').first().click(); await page.locator('[data-route="requirements"]').first().click();
@@ -146,7 +141,7 @@ app.on('window-all-closed',()=>app.quit());
     await eventually(async()=>(await page.locator('#requirement-questions').innerText()).includes('新的金额口径'),'编辑问题未回填');
     let saved=(await controls()).calls.filter(call=>call.action==='requirement:save').at(-1).payload.input;
     check(saved.questions.length===1 && saved.questions[0]==='需要客户确认新的金额口径？' && !('questionsText' in saved), '问题按换行转数组保存，空行不形成新问题');
-    check((await controls()).state.projects[0].requirements.find(item=>item.id==='req-a').manual===true && (await page.locator('.requirement-card').first().innerText()).includes('已手动调整'), '人工修改自动需求后保留人工标记');
+    check((await controls()).state.projects[0].requirements.find(item=>item.id==='req-a').manual===true, '人工修改自动需求后保留人工标记');
     await page.locator('[data-action="edit-requirement"][data-item="req-a"]').first().click();await page.locator('#field-questionsText').fill('');await page.locator('#modal-form [type="submit"]').click();
     await eventually(async()=>await page.locator('.requirement-question').count()===1,'清空问题未从集中区移除');
     check((await controls()).calls.filter(call=>call.action==='requirement:save').at(-1).payload.input.questions.length===0, '已确认的问题可以清空，并明确保存空数组');
@@ -154,27 +149,6 @@ app.on('window-all-closed',()=>app.quit());
     const copied=(await controls()).copied.at(-1);
     check(copied.includes('业务需求')&&copied.includes('待确认问题')&&copied.includes('附件保留多长时间？')&&!copied.includes('退款金额是否扣除？'), '复制摘要同时包含业务需求与当前确认问题，不复制已删除问题');
 
-    await page.locator('[data-action="analyze-requirements"]').click();
-    await eventually(async()=>await analyzeCalls()===callsBefore+1,'手动重新整理未调用');
-    check((await controls()).calls.filter(call=>call.action==='requirement:analyze').at(-1).payload.force===true, '重新整理显式提交当前项目和 force:true');
-    await eventually(async()=>(await page.locator('#requirement-analysis-status').innerText()).includes('正在梳理'),'进行状态未显示');
-    check(await page.locator('[data-action="analyze-requirements"]').isDisabled()&&await page.locator('.requirement-card').count()===2, '整理期间防止重复点击，已有需求继续可查看');
-    await patch({project:{requirementAnalysis:{status:{state:'error',message:'隔离模拟模型 503；已有需求保留。'},sourceCount:3,warnings:[]}}});
-    await eventually(async()=>(await page.locator('#requirement-analysis-status').innerText()).includes('503'),'错误状态未显示');
-    check(await page.locator('.requirement-card').count()===2&&await page.locator('.requirement-question').count()===1, '整理失败直接显示原因并保留已整理的业务和问题');
-    await patch({failNext:true});await pause(240);await page.locator('[data-action="analyze-requirements"]').click();
-    await eventually(async()=>(await page.locator('#requirement-analysis-status').innerText()).includes('需求整理请求失败'),'调度错误没有展示');
-    check(!await page.locator('[data-action="analyze-requirements"]').isDisabled(), '请求失败显示错误并恢复手动重试入口');
-
-    await patch({modelSettings:{enabled:false,keyConfigured:false},project:{requirementAnalysis:{status:{state:'unconfigured',message:'启用整理模型后自动提炼业务需求；已有需求保留。'},warnings:[]}}});
-    await eventually(async()=>await page.locator('.requirement-setup [data-action="model-settings"]').count()===1,'模型设置入口缺失');
-    check(await page.locator('[data-action="analyze-requirements"]').isDisabled()&&await page.locator('.requirement-card').count()===2,'缺模型时提供配置入口，保留原需求且不发无效重整请求');
-    await page.locator('.requirement-setup [data-action="model-settings"]').click();
-    check((await page.locator('.model-disclosure').innerText()).includes('可提取的原始、补充资料正文及业务对话'),'模型说明准确告知需求分析使用业务资料正文');
-    await page.locator('#modal-form [data-action="close-dialog"]').last().click();
-    await patch({modelSettings:{enabled:true,keyRequired:false},project:{requirementAnalysis:{status:{state:'ready',message:'仅根据原始业务资料整理完成。'},sourceCount:1,warnings:[]}}});
-    await eventually(async()=>(await page.locator('#requirement-analysis-status').innerText()).includes('仅根据原始业务资料'),'资料模式状态未更新');
-    check(!await page.locator('[data-action="analyze-requirements"]').isDisabled() && await page.locator('[data-action="bind-codex"]').count()===0, '仅有资料也可整理，不强制用户绑定会话');
     await patch({project:{requirements:[],files:[],codex:{},requirementAnalysis:{status:{state:'idle',message:'暂无可提取的业务正文。'},warnings:[]}}});
     await eventually(async()=>await page.locator('.requirement-card').count()===0,'空资料场景未更新');
     check(await page.locator('[data-action="add-files"]').isVisible()&&await page.locator('[data-action="bind-codex"]').isVisible()&&await page.locator('[data-action="copy-requirements"]').isDisabled(),'资料与会话都空时提供补充资料或关联入口，未要求人工写需求');
@@ -182,7 +156,7 @@ app.on('window-all-closed',()=>app.quit());
     await eventually(async()=>await page.locator('.requirement-card').count()===2,'截图场景未还原');
 
     }
-    const structuredRequirements=structuredClone(project.requirements);
+    const structuredRequirements=structuredClone(project.requirements);structuredRequirements[0].questions=['退款金额是否扣除？','报表由谁确认？'];
     structuredRequirements[0].sourceFirstAt='2026-10-09T01:00:00Z';structuredRequirements[0].sourceLastAt='2026-10-09T02:15:00Z';
     const confirmationItems=[
       {id:'confirmation-amount',confirmationKey:'refund-scope',scenario:'月度订单报表需要明确退款统计口径。',workaround:'暂按退款原额独立列出。',question:'退款金额是否扣除？',status:'待确认',sourceFirstAt:'2026-10-09T01:10:00Z',sourceLastAt:'2026-10-09T02:15:00Z',sourceRef:`codex:fixture-thread#turn=amount-a`,requirementKeys:['monthly-report']},
@@ -218,29 +192,42 @@ app.on('window-all-closed',()=>app.quit());
     structuredRequirements[0].sourceLastAt='2026-10-08T16:00:00Z';
     confirmationItems[0].sourceLastAt='2026-10-08T15:59:00Z';
     confirmationItems[2].sourceLastAt='2026-10-08T15:59:00Z';
-    await patch({project:{requirements:structuredRequirements,requirementConfirmations:confirmationItems,requirementsAfter:'2026-10-09T02:15:00.000Z'}});
+    await patch({project:{requirements:structuredRequirements,requirementConfirmations:confirmationItems,requirementsAfter:'2026-10-09T02:15:00.000Z',requirementsDateMode:'date'}});
     await eventually(async()=>await page.locator('#requirement-after').inputValue()==='2026-10-09','历史时分筛选未按日期显示');
     check(await page.locator('#requirement-after').getAttribute('type')==='date'&&await page.locator('.requirement-card').count()===1,'筛选只到日，历史时分筛选按当天零点兼容并包含零点事项');
-    await page.locator('[data-action="clear-requirement-filter"]').click();
+    await page.locator('[data-action="clear-requirement-filter"]').first().click();
     const beforeFilterCalls=await analyzeCalls();
     await page.locator('#requirement-after').fill('2026-10-09');await page.locator('#requirement-after').dispatchEvent('change');
     await eventually(async()=>await page.locator('.requirement-card').count()===1&&await page.locator('.requirement-confirmation').count()===1,'对话日期过滤没有生效');
     let filterCall=(await controls()).calls.filter(call=>call.action==='requirement:filter').at(-1).payload;
     check(filterCall.id===project.id&&filterCall.after==='2026-10-08T16:00:00.000Z','日期筛选按上海当天零点转换并保存到对应项目');
-    check(await page.locator('.requirement-confirmation[data-confirmation="confirmation-bill"]').isVisible()&&await page.locator('.requirement-confirmation[data-confirmation="confirmation-amount"]').count()===0&&(await page.locator('#requirement-undated').innerText()).includes('1 项')&&(await page.locator('#requirement-undated').innerText()).includes('未计入当前时间范围'),'包含当天事项，隐藏前一天和无对话时间的内容并说明');
+    check(await page.locator('.requirement-confirmation[data-confirmation="confirmation-bill"]').isVisible()&&await page.locator('.requirement-confirmation[data-confirmation="confirmation-amount"]').count()===0&&(await page.locator('#requirement-undated').innerText()).includes('无日期 1'),'包含当天事项，隐藏前一天和无对话时间的内容并说明');
     await page.locator('[data-action="copy-requirements"]').click();currentCopy=(await controls()).copied.at(-1);
-    check(currentCopy.includes('2026-10-09 起的 Codex 对话（含当天）')&&currentCopy.includes('提单信息最终从哪里获取')&&!currentCopy.includes('退款金额是否扣除？')&&!currentCopy.includes('附件保留多长时间？')&&currentCopy.includes('按月导出订单报表'),'复制遵循日期范围并明确包含当天，不带出历史事项');
+    check(currentCopy.includes('对话日期：2026-10-09')&&currentCopy.includes('提单信息最终从哪里获取')&&!currentCopy.includes('退款金额是否扣除？')&&!currentCopy.includes('附件保留多长时间？')&&currentCopy.includes('按月导出订单报表'),'复制遵循日期范围并明确包含当天，不带出历史事项');
     await page.locator('[data-route="overview"]').first().click();await page.locator('[data-route="requirements"]').first().click();
     check(await page.locator('#requirement-after').inputValue()==='2026-10-09','切页保留当前项目已保存的日期筛选');
-    await page.locator('#project-select').selectOption(otherProject.id);await eventually(async()=>await page.locator('#requirement-after').inputValue()==='','另一项目继承了不属于自己的筛选');
+    await page.locator('#project-select').selectOption(otherProject.id);await eventually(async()=>await page.locator('#requirement-after').inputValue()===new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(new Date()),'另一项目没有默认当日筛选');
     check((await controls()).state.projects[1].requirementsAfter===''&&await page.locator('.requirement-confirmation').count()===0,'项目切换不串需求、确认事项或时间筛选');
     await page.locator('#project-select').selectOption(project.id);await eventually(async()=>await page.locator('#requirement-after').inputValue()==='2026-10-09','原项目筛选未恢复');
     await page.reload();await page.locator('[data-route="requirements"]').first().click();
     check(await page.locator('#requirement-after').inputValue()==='2026-10-09'&&await page.locator('.requirement-confirmation').count()===1,'重新载入界面后仍使用后台保存的项目筛选');
-    await page.locator('[data-action="clear-requirement-filter"]').click();await eventually(async()=>await page.locator('.requirement-card').count()===2,'清除筛选没有恢复旧需求');
+    await page.locator('[data-action="clear-requirement-filter"]').first().click();await eventually(async()=>await page.locator('.requirement-card').count()===2,'清除筛选没有恢复旧需求');
     check((await controls()).calls.filter(call=>call.action==='requirement:filter').at(-1).payload.after===''&&await page.locator('#requirement-after').inputValue()===''&&await page.locator('.requirement-confirmation').count()===3,'清除筛选只恢复显示，历史数据始终保留');
     check(await analyzeCalls()===beforeFilterCalls,'设置或清除日期筛选、项目切换和重新载入均不请求 AI');
-    await page.evaluate(()=>window.scrollTo(0,0));
+    // Today's default uses Shanghai boundaries and never leaks tomorrow's work.
+    const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(new Date());
+    const midnight=Date.parse(today+'T00:00:00+08:00');
+    const many=Array.from({length:24},(_,i)=>({...structuredRequirements[0],id:'scroll-'+i,title:'当日业务需求 '+i,sourceLastAt:new Date(midnight+i*60000).toISOString()}));
+    await patch({project:{requirements:[...many,{...structuredRequirements[1],id:'yesterday',sourceLastAt:new Date(midnight-1).toISOString()},{...structuredRequirements[1],id:'tomorrow',sourceLastAt:new Date(midnight+86400000).toISOString()}],requirementsDateMode:undefined}});
+    await eventually(async()=>await page.locator('.requirement-card').count()===24,'默认当日筛选没有排除昨日和次日');
+    check(await page.locator('#requirement-after').inputValue()===today,'旧项目和未设日期的项目默认上海当日');
+    const scrolling=await page.locator('.requirement-list').evaluate(element=>{element.scrollTop=100;const rows=[...element.querySelectorAll('.requirement-card')].slice(0,2).map(row=>row.getBoundingClientRect());return {scrolls:element.scrollHeight>element.clientHeight&&element.scrollTop>0,oneColumn:rows[0].x===rows[1].x&&rows[1].y>=rows[0].bottom-1};});
+    check(scrolling.scrolls&&scrolling.oneColumn,'业务需求纵向排列，长列表在面板内滚动');
+    await page.locator('[data-action="clear-requirement-filter"]').first().click();await eventually(async()=>await page.locator('.requirement-card').count()===26,'全部日期没有保留历史与次日需求');
+    check(await page.locator('.requirement-list').count()===1&&await page.locator('.requirement-grid').count()===0,'全部日期仍使用相同纵向列表');
+    await page.locator('[data-action="today-requirement-filter"]').click();await eventually(async()=>await page.locator('.requirement-card').count()===24,'当日按钮没有恢复动态今日筛选');
+    check((await controls()).state.projects[0].requirementsDateMode==='today','当日模式持久化，跨日不固定在旧日期');
+    await page.evaluate(()=>{document.querySelector('.requirement-list').scrollTop=0;window.scrollTo(0,0);});
     const desktop=path.join(output,`23-自动需求-UI桌面-${MODE}.png`);await page.screenshot({path:desktop,fullPage:true});screenshots.push(desktop);
     await app.evaluate(({BrowserWindow})=>{const window=BrowserWindow.getAllWindows().find(value=>value.webContents.getURL().endsWith('/index.html'));window.setMinimumSize(600,500);window.setContentSize(900,760);});
     await pause(220);

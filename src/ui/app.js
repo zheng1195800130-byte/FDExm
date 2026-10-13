@@ -78,10 +78,11 @@ function renderGlobalActions(){
 function dailyStatusText(p,date){
   const day=p.dailyDesk?.days?.[date]||{},saved=day.organizedAt||summaryFor(p,date)?.updatedAt;
   const last=saved?`上次成功整理 ${requirementTime(saved)}`:'',pending=day.unprocessedCount||0;
+  const coverage=day.threadCount?` · ${day.threadCount} 个会话 · ${day.count||0} 轮对话`:'',warning=day.captureWarning?` · ${brief(day.captureWarning,160)}`:'';
   if(dailyBusy||day.status==='running')return `正在整理 ${date} 的新增内容，已有内容保留。`;
   if(day.status==='error')return `本次整理未完成：${brief(day.message||'请稍后手动重试',150)}。${last?last+'，显示上次保存内容。':'已有记录保留。'}`;
-  if(saved)return `${last}${pending?` · 上次收录还有 ${pending} 项待整理`:''}${day.partial?' · 部分原文已缩略':''}`;
-  return `${date} · ${day.count||0} 轮已收录。点击整理时获取当日最新对话。`;
+  if(saved)return `${last}${coverage}${pending?` · 上次收录还有 ${pending} 项待整理`:''}${day.partial?' · 部分原文未完整收录或已缩略':''}${warning}`;
+  return `${date} · ${day.count||0} 轮已收录${day.threadCount?` · ${day.threadCount} 个会话`:''}。点击整理时接续本项目当日对话。${warning}`;
 }
 function render(){
   renderGlobalActions();
@@ -137,14 +138,15 @@ function requirementAfterISO(value){
   const iso=new Date(Date.UTC(+parts[1],+parts[2]-1,+parts[3],-8)).toISOString();
   if(requirementAfterInput(iso)!==value)throw new Error('请选择有效的日期。');return iso;
 }
+function requirementDate(p){return p.requirementsDateMode==='all'?'':p.requirementsDateMode==='date'?requirementAfterInput(p.requirementsAfter):today();}
 function requirementView(p){
   const allItems=p.requirements||[],allConfirmations=(Array.isArray(p.requirementConfirmations)?p.requirementConfirmations:[]).filter(item=>item&&typeof item.question==='string'&&item.question.trim());
-  const date=requirementAfterInput(p.requirementsAfter),cutoff=date?requirementTimestamp(requirementAfterISO(date)):NaN,filtered=Number.isFinite(cutoff),matches=item=>!filtered||requirementTimestamp(item.sourceLastAt)>=cutoff;
+  const date=requirementDate(p),filtered=!!date,matches=item=>!filtered||requirementAfterInput(item.sourceLastAt)===date;
   const items=allItems.filter(matches),knownQuestions=new Set(allConfirmations.map(item=>confirmationQuestion(item.question)));
   const questions=requirementQuestions(items).filter(({text})=>!knownQuestions.has(confirmationQuestion(text)));
   const confirmations=allConfirmations.filter(matches),active=confirmations.filter(item=>item.status!=='已解决'),resolved=confirmations.filter(item=>item.status==='已解决');
   const undated=[...allItems,...allConfirmations].filter(item=>!Number.isFinite(requirementTimestamp(item.sourceLastAt))).length;
-  return {items,questions,active,resolved,filtered,undated};
+  return {items,questions,active,resolved,filtered,undated,date};
 }
 function requirementTimeMarkup(item){const time=requirementTime(item.sourceLastAt);return `<div class="requirement-source-time">${time?`Codex 对话 · ${esc(time)}`:'暂无对话时间'}</div>`;}
 function requirementSourceMarkup(p,item){
@@ -165,16 +167,16 @@ function renderRequirements(p){
   const running=dailyBusy||p.dailyDesk?.days?.[today()]?.status==='running';
   const hasMaterials=safeFiles(p).some(file=>!file.missing&&['原始资料','补充资料'].includes(file.kind)),hasInput=hasMaterials||!!p.codex?.threadId;
   $('workspace').innerHTML=heading('REQUIREMENTS','需求清单','',actionButton('copy-requirements','复制需求摘要','copy',items.length||questions.length||active.length?'':'disabled','primary'))+
-  `<div class="requirement-time-filter"><label for="requirement-after">从此日期起 <input id="requirement-after" type="date" value="${esc(requirementAfterInput(p.requirementsAfter))}" aria-describedby="requirement-time-help"></label><span id="requirement-time-help">Codex 对话日期 · 含当天，上海时间</span>${p.requirementsAfter?actionButton('clear-requirement-filter','清除日期筛选',null,'','small'):''}</div>${view.undated?`<p id="requirement-undated" class="requirement-undated">${view.undated} 项需求或确认事项暂无对话时间${view.filtered?'，未计入当前时间范围':''}。</p>`:''}`+
-  `<section class="requirement-section" aria-labelledby="requirement-business-title"><div class="requirement-section-head"><div><h2 id="requirement-business-title">业务需求 <span>${items.length}</span></h2></div><button class="link-btn" data-action="new-requirement">${icon('plus',13)}补充需求</button></div>`+
-  (items.length?`<div class="requirement-grid">${items.map((r,i)=>`<article class="requirement-card" data-requirement="${esc(r.id)}"><div class="requirement-head"><div><div class="item-key">${esc(r.code||`REQ · ${String((p.requirements||[]).indexOf(r)+1).padStart(3,'0')}`)}</div><h3>${esc(r.title)}</h3></div>${badge(r.status)}</div><p class="description">${esc(brief(r.description,280)||'暂无补充说明')}</p>${requirementTimeMarkup(r)}${requirementSourceMarkup(p,r)}<div class="card-bottom"><span class="small-text muted">${r.managedBy==='requirements-auto'?(r.manual?'已手动调整':'自动整理'):'人工补充'}</span><button class="link-btn" data-action="edit-requirement" data-item="${esc(r.id)}">编辑 ${icon('edit',13)}</button></div></article>`).join('')}</div>`:view.filtered?empty('所选日期起暂无业务需求','可清除日期筛选查看全部需求。','','requirements'):empty(!hasInput?'先补充业务资料':running?'正在整理业务需求':!modelReady?'先配置整理模型':'等待业务需求整理',!hasInput?'提供客户业务资料，或关联包含初次业务沟通的 Codex 会话。':running?'整理完成后会自动显示，无需手动填写。':!modelReady?'请在 Codex 收录中配置整理模型。':'在项目概览点击整理当前项目后，需求会显示在这里。',!hasInput?actionButton('add-files','补充资料','upload','','small')+actionButton('bind-codex','关联会话','link','','small'):'','requirements'))+`</section>`+
-  `<section id="requirement-questions" class="panel requirement-questions" aria-labelledby="requirement-questions-title"><div class="panel-head"><h2 id="requirement-questions-title">待确认问题 <span>${questions.length+active.length}</span></h2><span class="caption">场景、临时处理与需要客户确认的事项</span></div><div class="panel-body">${active.map(item=>confirmationMarkup(p,item)).join('')}${questions.map(({text,item})=>`<div class="requirement-question" data-requirement="${esc(item.id)}"><div><p>${esc(text)}</p><span>对应需求：${esc(item.title)}</span>${requirementTimeMarkup(item)}</div><button class="link-btn" data-action="edit-requirement" data-item="${esc(item.id)}" aria-label="编辑 ${esc(item.title)} 的待确认问题">编辑</button></div>`).join('')}${!active.length&&!questions.length?`<div class="empty-inline">${view.filtered?'此时间之后暂无待确认问题。':(p.requirements||[]).length?'暂无已整理出的待确认问题。':'业务需求与暂缓事项整理后，会集中显示在这里。'}</div>`:''}${resolved.length?`<details id="requirement-resolved" class="requirement-resolved"><summary>已解决事项 (${resolved.length})</summary>${resolved.map(item=>confirmationMarkup(p,item,true)).join('')}</details>`:''}</div></section>`;
+  `<div class="requirement-time-filter"><label for="requirement-after">对话日期 <input id="requirement-after" type="date" value="${esc(view.date)}"></label>${actionButton('today-requirement-filter','当日',null,'',p.requirementsDateMode!=='date'&&p.requirementsDateMode!=='all'?'small active':'small')}${actionButton('clear-requirement-filter','全部日期',null,'',!view.filtered?'small active':'small')}${view.undated?`<button id="requirement-undated" class="link-btn" data-action="clear-requirement-filter">无日期 ${view.undated}</button>`:''}</div>`+
+  `<section class="panel requirement-section" aria-labelledby="requirement-business-title"><div class="panel-head requirement-section-head"><div><h2 id="requirement-business-title">业务需求 <span>${items.length}</span></h2></div><button class="link-btn" data-action="new-requirement">${icon('plus',13)}补充需求</button></div>`+
+  (items.length?`<div class="requirement-list panel-body requirement-scroll" role="region" aria-label="业务需求列表" tabindex="0">${items.map((r,i)=>`<article class="requirement-card" data-requirement="${esc(r.id)}"><div class="requirement-head"><div><h3>${esc(r.title)}</h3></div><div class="actions">${badge(r.status)}<button class="link-btn" data-action="edit-requirement" data-item="${esc(r.id)}" aria-label="编辑 ${esc(r.title)}">编辑 ${icon('edit',13)}</button></div></div><p class="description">${esc(r.description||'暂无补充说明')}</p>${requirementTimeMarkup(r)}${requirementSourceMarkup(p,r)}</article>`).join('')}</div>`:view.filtered?empty('当日暂无业务需求','','','requirements'):empty(!hasInput?'先补充业务资料':running?'正在整理业务需求':!modelReady?'先配置整理模型':'等待业务需求整理',!hasInput?'提供客户业务资料，或关联包含初次业务沟通的 Codex 会话。':running?'整理完成后会自动显示，无需手动填写。':!modelReady?'请在顶部模型设置中配置整理模型。':'在项目概览点击整理当前项目后，需求会显示在这里。',!hasInput?actionButton('add-files','补充资料','upload','','small')+actionButton('bind-codex','关联会话','link','','small'):'','requirements'))+`</section>`+
+  `<section id="requirement-questions" class="panel requirement-questions" aria-labelledby="requirement-questions-title"><div class="panel-head"><h2 id="requirement-questions-title">待确认问题 <span>${questions.length+active.length}</span></h2></div><div class="panel-body requirement-scroll" role="region" aria-label="待确认问题列表" tabindex="0">${active.map(item=>confirmationMarkup(p,item)).join('')}${questions.map(({text,item})=>`<div class="requirement-question" data-requirement="${esc(item.id)}"><div><p>${esc(text)}</p><span>对应需求：${esc(item.title)}</span>${requirementTimeMarkup(item)}</div><button class="link-btn" data-action="edit-requirement" data-item="${esc(item.id)}" aria-label="编辑 ${esc(item.title)} 的待确认问题">编辑</button></div>`).join('')}${!active.length&&!questions.length?`<div class="empty-inline">${view.filtered?'当日暂无待确认问题。':(p.requirements||[]).length?'暂无已整理出的待确认问题。':'业务需求与暂缓事项整理后，会集中显示在这里。'}</div>`:''}${resolved.length?`<details id="requirement-resolved" class="requirement-resolved"><summary>已解决事项 (${resolved.length})</summary>${resolved.map(item=>confirmationMarkup(p,item,true)).join('')}</details>`:''}</div></section>`;
 }
-async function saveRequirementFilter(value){
-  const p=project();if(!p)return;const after=requirementAfterISO(value),previous=p.requirementsAfter||'';if(after===previous)return;
+async function saveRequirementFilter(value,mode=value?'date':'all'){
+  const p=project();if(!p)return;const after=requirementAfterISO(value),previous=requirementDate(p);if(after===(p.requirementsAfter||'')&&mode===p.requirementsDateMode)return;
   const input=$('requirement-after');if(input)input.disabled=true;
-  try{await request('requirement:filter',{id:p.id,after});await refresh();}
-  catch(error){if(project()?.id===p.id&&input?.isConnected)input.value=requirementAfterInput(previous);throw error;}
+  try{await request('requirement:filter',{id:p.id,after,mode});await refresh();}
+  catch(error){if(project()?.id===p.id&&input?.isConnected)input.value=previous;throw error;}
   finally{if(input?.isConnected)input.disabled=false;}
 }
 async function organizeDaily(all=false,date=today()){
@@ -228,8 +230,8 @@ function renderCodex(p){
   const bound=p.codex?.threadId,summary=summaryFor(p,codexDate),items=(summary?.items||[]).map((item,index)=>({item,index})).filter(({item})=>!summaryDismissed(p,codexDate,item)),status={state:p.dailyDesk?.days?.[codexDate]?.status||'idle',message:p.dailyDesk?.days?.[codexDate]?.message||''},running=dailyBusy||status.state==='running',modelReady=state.modelSettings?.enabled&&(state.modelSettings?.keyConfigured||state.modelSettings?.keyRequired===false);
   const dates=[...new Set([today(),...Object.keys(p.dailyDesk?.days||{}),...codexWorkDates(p)])].sort((a,b)=>b.localeCompare(a));
   const statusText=dailyStatusText(p,codexDate);
-  $('workspace').innerHTML=heading('DAILY CAPTURE','Codex 收录','',actionButton('paste-record','粘贴有效内容','copy')+actionButton('model-settings','模型设置','edit')+actionButton('summary-rules','整理规则','records'))+
-  `<section class="panel codex-binding"><div><div class="binding-title">${icon('codex',21)}${bound?'已关联 · 手动整理':'关联你正在使用的会话'}</div>${bound?'':`<div class="binding-path">开发目录：${esc(p.devDir)}</div>`}</div>${actionButton('bind-codex',bound?'更换会话':'选择会话','link','','small')}</section>
+  $('workspace').innerHTML=heading('DAILY CAPTURE','Codex 收录','',actionButton('paste-record','粘贴有效内容','copy')+actionButton('summary-rules','整理规则','records'))+
+  `<section class="panel codex-binding"><div><div class="binding-title">${icon('codex',21)}${bound?'已关联 · 手动整理':'关联你正在使用的会话'}</div><div class="binding-path">${bound?'整理同一开发目录的当日对话，包含已归档会话。':''}开发目录：${esc(p.devDir)}</div></div>${actionButton('bind-codex',bound?'更换会话':'选择会话','link','','small')}</section>
   <section class="codex-daily"><div class="daily-toolbar"><div class="daily-date-controls"><label for="codex-date">工作日期<input type="date" id="codex-date" value="${esc(codexDate)}" aria-label="Codex 工作日期"></label>${dates.length>1?`<select id="codex-history" aria-label="选择历史工作日期"><option value="">历史日期</option>${dates.map(date=>`<option value="${esc(date)}" ${date===codexDate?'selected':''}>${esc(date)}</option>`).join('')}</select>`:''}</div><div class="daily-toolbar-actions"><span class="daily-count">${codexDate===today()?'今日':'当日'} <strong>${items.length}</strong> 项</span></div></div>
   
   <div class="daily-status"><span class="summary-state ${running?'running':status.state==='error'?'error':''}">${icon(running?'refresh':'clock',14)}${esc(statusText)}</span><span class="summary-method">${summary?summary.method==='model'?'模型整理':'本地整理':modelReady?'点击后模型整理':'本地收录'}${summary?.updatedAt?` · ${esc(new Date(summary.updatedAt).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit'}))} 更新`:''}</span></div>
@@ -414,7 +416,7 @@ function requirementCopyText(p){
   const business=items.map(item=>`- [${item.status}] ${item.title}${item.description?`：${brief(item.description,180)}`:''}（${time(item)}）`).join('\n');
   const confirmations=active.map(item=>`- 场景：${item.scenario||'场景尚未补充'}（${time(item)}）${item.workaround?`\n  临时处理：${item.workaround}`:''}\n  待确认：${item.question}`);
   confirmations.push(...questions.map(({text,item})=>`- ${text}（${item.title}；${time(item)}）`));
-  return `${p.name} · 需求摘要${p.requirementsAfter?`\n只看 ${requirementAfterInput(p.requirementsAfter)} 起的 Codex 对话（含当天）`:''}\n\n业务需求\n${business||'当前范围内暂无业务需求。'}\n\n待确认问题\n${confirmations.join('\n')||'暂无已整理出的待确认问题。'}`;
+  return `${p.name} · 需求摘要${requirementDate(p)?`\n对话日期：${requirementDate(p)}`:'\n全部日期'}\n\n业务需求\n${business||'当前范围内暂无业务需求。'}\n\n待确认问题\n${confirmations.join('\n')||'暂无已整理出的待确认问题。'}`;
 }
 function recordForm(input={}){
   const p=project(), draft=input.confirmed===undefined?false:input.confirmed;
@@ -441,9 +443,9 @@ async function bindCodex(){
     const id=t.id||t.threadId,cwd=t.cwd||t.path||t.projectPath||'';
     const checked=!nearby&&(id===p.codex?.threadId||(!p.codex?.threadId&&i===0));
     const relation=nearby?`会话在${t.relation==='parent'?'上':'下'} ${t.distance===2?2:1} 级目录`:(t.pathMatch||t.matchesProject?'匹配开发目录':'');
-    return `<label class="thread-option"><input type="radio" name="threadId" value="${esc(id)}" ${checked?'checked':''} ${nearby?'':'required'}><strong>${esc(t.title||t.name||'未命名会话')}</strong><small>${nearby?'会话目录：':''}${esc(cwd)}</small>${relation?`<small>${esc(relation)}</small>`:''}<small>${esc(id)}${t.updatedAt?` · ${dayLabel(t.updatedAt)}`:''}</small></label>`;
+    return `<label class="thread-option"><input type="radio" name="threadId" value="${esc(id)}" ${checked?'checked':''} ${nearby?'':'required'}><strong>${esc(t.title||t.name||'未命名会话')}${t.archived?' · 已归档':''}</strong><small>${nearby?'会话目录：':''}${esc(cwd)}</small>${relation?`<small>${esc(relation)}</small>`:''}<small>${esc(id)}${t.updatedAt?` · ${dayLabel(t.updatedAt)}`:''}</small></label>`;
   }).join(''):empty('没有找到可关联会话','请核对项目开发目录是否为 Codex 会话使用的仓库根目录，或改为对应会话目录后重新关联。也请确认 Codex 已在本机创建该会话。','','codex');
-  showForm('选择 Codex 会话','核对开发目录和会话名称后关联。',directory+guidance+choices,async values=>{
+  showForm('选择 Codex 会话','确认项目入口后，整理会接续同一开发目录的当日会话，包含已归档会话。',directory+guidance+choices,async values=>{
     if(!values.threadId)throw new Error('请先选择一个会话。');
     if(!options.some(t=>(t.id||t.threadId)===values.threadId))throw new Error('请选择列表中的会话。');
     await request('codex:bind',{id:p.id,threadId:values.threadId,...(nearby?{adoptCwd:true}:{})});
@@ -483,7 +485,8 @@ async function handleAction(action,target){
     case 'copy-directory':await request('path:copy',{id,kind:target.dataset.kind});notify('目录路径已复制');break;
     case 'open-directory':await request('path:open',{id,kind:target.dataset.kind});break;
     case 'new-requirement':requirementForm();break;
-    case 'clear-requirement-filter':await saveRequirementFilter('');break;
+    case 'today-requirement-filter':await saveRequirementFilter('','today');break;
+    case 'clear-requirement-filter':await saveRequirementFilter('','all');break;
     case 'edit-requirement-confirmation':requirementConfirmationForm((p.requirementConfirmations||[]).find(item=>item.id===target.dataset.confirmation));break;
     case 'copy-requirements':await request('clipboard:text',{text:requirementCopyText(p)});notify('需求摘要已复制');break;
     case 'edit-requirement':requirementForm(p.requirements.find(r=>r.id===target.dataset.item));break;
@@ -558,6 +561,7 @@ document.addEventListener('change',async event=>{
 $('add-project').addEventListener('click',()=>projectForm());
 $('compact-button').addEventListener('click',async()=>{try{await request('window:compact');}catch(e){notify(e.message,true);}});
 $('compact-icon').innerHTML=icon('ball',17);
+$('topbar-model-action').innerHTML=actionButton('model-settings','模型设置','edit','','topbar-model-settings');
 $('today-label').textContent=new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',month:'long',day:'numeric',weekday:'long'}).format(new Date());
 $('form-dialog').addEventListener('cancel',()=>{const key=$('field-apiKey');if(key)key.value='';modalSubmit=null;modalTest=null;});
 $('form-dialog').addEventListener('close',()=>{const key=$('field-apiKey');if(key)key.value='';modalTest=null;renderDeferredMaterials();});

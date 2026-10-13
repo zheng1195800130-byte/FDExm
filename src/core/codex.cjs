@@ -2,7 +2,8 @@
 
 // Read-only compatibility adapter for Codex's local rollout files. This is an
 // internal, version-dependent format, not a supported Codex API. Never write to
-// Codex home, inspect credentials, launch Codex, or select a thread implicitly.
+// Codex home, inspect credentials, or launch Codex. Project-day collection is
+// explicit and confined to the project's exact development directory.
 const fs = require('node:fs/promises');
 const { createReadStream } = require('node:fs');
 const os = require('node:os');
@@ -17,6 +18,7 @@ const MAX_READ = 96 * 1024 * 1024;
 const MAX_HISTORY_READ = 1024 * 1024 * 1024;
 const MAX_TURNS = 500;
 const MAX_DATES = 4000;
+const SESSION_ROOTS = ['sessions', 'archived_sessions'];
 const metadataCache = new Map();
 const readCache = new Map();
 const COMPAT_WARNING = '本地 Codex 会话格式属于兼容读取，升级后可能需要适配；内容仅供人工确认，不代表任务已完成。';
@@ -50,17 +52,22 @@ function codexHomePath(home) {
 
 async function sessionFiles(home) {
   const codexHome = codexHomePath(home);
-  const sessions = path.join(codexHome, 'sessions');
   try {
-    const [homeStat, rootStat] = await Promise.all([fs.lstat(codexHome), fs.lstat(sessions)]);
-    if (!homeStat.isDirectory() || homeStat.isSymbolicLink() || !rootStat.isDirectory() || rootStat.isSymbolicLink()) return [];
-    const [realHome, realSessions] = await Promise.all([realpath(codexHome), realpath(sessions)]);
-    if (!inside(realHome, realSessions)) return [];
+    const homeStat = await fs.lstat(codexHome);
+    if (!homeStat.isDirectory() || homeStat.isSymbolicLink()) return [];
+    const realHome = await realpath(codexHome);
     const files = [];
-    const queue = [{ directory: sessions, depth: 0 }];
+    const queue = [];
+    for (const name of SESSION_ROOTS) {
+      const root = path.join(codexHome, name);
+      try {
+        const stat = await fs.lstat(root), realRoot = await realpath(root);
+        if (stat.isDirectory() && !stat.isSymbolicLink() && inside(realHome, realRoot)) queue.push({ directory: root, root, realRoot, depth: 0, archived: name === 'archived_sessions' });
+      } catch (error) { if (!['ENOENT', 'ENOTDIR', 'EACCES'].includes(error.code)) throw error; }
+    }
     let count = 0;
     while (queue.length && files.length < MAX_FILES && count < MAX_ENTRIES) {
-      const { directory, depth } = queue.shift();
+      const { directory, root, realRoot, depth, archived } = queue.shift();
       let entries;
       try { entries = await fs.readdir(directory, { withFileTypes: true }); } catch { continue; }
       entries.sort((a, b) => b.name.localeCompare(a.name));
@@ -68,18 +75,19 @@ async function sessionFiles(home) {
         if (++count > MAX_ENTRIES || files.length >= MAX_FILES) break;
         if (entry.isSymbolicLink()) continue;
         const candidate = path.join(directory, entry.name);
-        if (!inside(sessions, candidate)) continue;
-        if (entry.isDirectory() && depth < 8) queue.push({ directory: candidate, depth: depth + 1 });
+        if (!inside(root, candidate)) continue;
+        if (entry.isDirectory() && depth < 8) queue.push({ directory: candidate, root, realRoot, depth: depth + 1, archived });
         else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
           // Recheck links and containment to avoid following a swapped directory.
           try {
             const stat = await fs.lstat(candidate);
             const real = await realpath(candidate);
-            if (stat.isFile() && !stat.isSymbolicLink() && inside(realSessions, real)) files.push({ path: candidate, stat });
+            if (stat.isFile() && !stat.isSymbolicLink() && inside(realRoot, real)) files.push({ path: candidate, stat, archived });
           } catch { /* A running Codex may rotate files. */ }
         }
       }
     }
+    files.truncated = queue.length > 0 || files.length >= MAX_FILES || count >= MAX_ENTRIES;
     return files;
   } catch (error) {
     if (error.code === 'ENOENT' || error.code === 'ENOTDIR' || error.code === 'EACCES') return [];
@@ -228,7 +236,7 @@ async function metadata(file) {
   if (rejected || !meta || !(meta.id || meta.session_id) || typeof meta.cwd !== 'string') return null;
   const thread = {
     id: String(meta.id || meta.session_id), title: title || '未命名 Codex 会话', cwd: meta.cwd,
-    path: file.path, updatedAt: file.stat.mtime.toISOString(),
+    path: file.path, updatedAt: file.stat.mtime.toISOString(), archived: !!file.archived,
   };
   if (metadataCache.size >= MAX_FILES) metadataCache.delete(metadataCache.keys().next().value);
   metadataCache.set(file.path, { key, thread });
@@ -244,11 +252,13 @@ async function listThreads({ cwd, home } = {}) {
     for (const thread of batch) if (thread && (!cwd || normalizeCwd(thread.cwd) === normalizeCwd(cwd))) threads.push(thread);
   }
   const seen = new Set();
-  return threads.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).filter(thread => {
+  const result = threads.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).filter(thread => {
     if (seen.has(thread.id)) return false;
     seen.add(thread.id);
     return true;
   });
+  Object.defineProperty(result, 'truncated', { value: !!files.truncated });
+  return result;
 }
 
 // A bound thread normally keeps the same path. Revalidate that path without
@@ -256,9 +266,10 @@ async function listThreads({ cwd, home } = {}) {
 // never a substitute for checking containment and symbolic links again.
 async function knownThread({ threadId, cwd, home }) {
   const codexHome = codexHomePath(home);
-  const sessions = path.join(codexHome, 'sessions');
   for (const [file, cached] of metadataCache) {
-    if (cached.thread.id !== threadId || !inside(sessions, file) || (cwd && normalizeCwd(cached.thread.cwd) !== normalizeCwd(cwd))) continue;
+    const rootName = SESSION_ROOTS.find(name => inside(path.join(codexHome, name), file));
+    if (cached.thread.id !== threadId || !rootName || (cwd && normalizeCwd(cached.thread.cwd) !== normalizeCwd(cwd))) continue;
+    const sessions = path.join(codexHome, rootName);
     try {
       const relative = path.relative(codexHome, file);
       let current = codexHome;
@@ -273,7 +284,7 @@ async function knownThread({ threadId, cwd, home }) {
         realpath(codexHome), realpath(sessions), realpath(file), fs.lstat(file),
       ]);
       if (!inside(realHome, realSessions) || !inside(realSessions, realFile) || !stat.isFile() || stat.isSymbolicLink()) continue;
-      const thread = await metadata({ path: file, stat });
+      const thread = await metadata({ path: file, stat, archived: rootName === 'archived_sessions' });
       if (thread?.id === threadId && (!cwd || normalizeCwd(thread.cwd) === normalizeCwd(cwd))) return { thread, stat };
     } catch {
       metadataCache.delete(file);
@@ -401,6 +412,43 @@ async function readThread({ threadId, cwd, home, history = false, date } = {}) {
   return result;
 }
 
+// Called only by an explicit organization action. Metadata must match the
+// exact cwd; parent/sibling directories and spawned agents are never included.
+async function readProjectDay({ threadId, cwd, home, date } = {}) {
+  if (typeof threadId !== 'string' || !threadId || threadId.length > 200 || !normalizeCwd(cwd)) throw new Error('请先关联项目会话并指定工作日期。');
+  if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || localDate(`${date}T04:00:00Z`) !== date) throw new Error('工作日期格式无效。');
+  const candidates = await listThreads({ cwd, home });
+  if (!candidates.length) throw new Error('没有找到匹配项目的 Codex 会话（含已归档会话），请核对开发目录。已有收录仍保留。');
+  // An unchanged rollout older than the requested day cannot contain new
+  // work from that day. Keep the bound entry even when it is old, and avoid
+  // scanning unrelated earlier months or attributing their omissions to today.
+  const ordered = candidates.filter(thread => thread.id === threadId || localDate(thread.updatedAt) >= date)
+    .sort((a, b) => Number(b.id === threadId) - Number(a.id === threadId) || b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+  const selected = ordered.slice(0, 60), threads = [], turns = [], warnings = [], seen = new Set();
+  let partial = !!candidates.truncated || ordered.length > selected.length;
+  if (partial) warnings.push('会话数量超过本次读取范围，请核对遗漏内容');
+  if (!candidates.some(thread => thread.id === threadId)) warnings.push('原关联会话不可读取，已接续同一开发目录的其他会话，并保留已有收录');
+  for (const thread of selected) {
+    let result;
+    try { result = await module.exports.readThread({ threadId: thread.id, cwd, home, history: true, date }); }
+    catch { partial = true; warnings.push(`会话 ${thread.id} 未能读取，已有收录保留`); continue; }
+    threads.push({ ...result.thread, archived: thread.archived });
+    partial ||= !!(result.workTruncated ?? result.truncated);
+    if (result.workTruncated ?? result.truncated) warnings.push(`会话 ${thread.id} 部分原文未读取`);
+    for (const turn of result.turns.filter(turn => turn.date === date)) {
+      // Forks can replay a parent's completed turns. Only identical evidence
+      // with the same original turn and time is a duplicate, never equal text alone.
+      const key = JSON.stringify([turn.id, turn.timestamp, turn.userText, turn.assistantText, turn.attachments]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      turns.push({ ...turn, id: thread.id === threadId ? turn.id : `${thread.id}:${turn.id}`, originalTurnId: turn.id, threadId: thread.id });
+    }
+  }
+  if (!threads.length) throw new Error('项目会话暂无法读取，已有收录和整理结果仍保留，请稍后重试。');
+  turns.sort((a, b) => a.timestamp.localeCompare(b.timestamp) || a.id.localeCompare(b.id));
+  return { turns, threads, truncated: partial, workTruncated: partial, warning: warnings.join('；') };
+}
+
 function fieldsFrom(text) {
   let fields = {};
   for (const line of cleanText(text).split(/\r?\n/)) {
@@ -453,4 +501,4 @@ function extractDrafts(turns = []) {
   return { requirements, records };
 }
 
-module.exports = { listThreads, readThread, extractDrafts };
+module.exports = { listThreads, readThread, readProjectDay, extractDrafts };

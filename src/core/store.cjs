@@ -246,6 +246,7 @@ class Store {
       if (project.requirementConfirmations !== undefined && !Array.isArray(project.requirementConfirmations)) throw new Error('需求确认档案结构无效');
       project.requirementConfirmations ||= [];
       project.requirementsAfter = sourceTimestamp(project.requirementsAfter || '', '需求时间筛选');
+      project.requirementsDateMode = ['today','date','all'].includes(project.requirementsDateMode) ? project.requirementsDateMode : 'today';
       for (const summary of project.codex.dailySummaries) dateValue(summary.date);
     }
     data.settings.summarizer = summarizerConfig(data.settings.summarizer || {});
@@ -468,15 +469,22 @@ class Store {
     if (devChanged) updates.codex = { threadId: boundThreadId, lastSyncAt: '' };
     const previousCodex = codexDefaults(project.codex);
     const nextCodex = codexDefaults(updates.codex || project.codex);
-    if (devChanged || nextCodex.threadId !== previousCodex.threadId) {
+    if (devChanged) {
       const previousAutoRecords = project.records.filter(record => record.managedBy === 'codex-auto' && !record.confirmed && !record.manual);
       const archives = [...(previousCodex.summaryArchives || [])];
       if (previousCodex.dailySummaries.length || previousAutoRecords.length) archives.push({ threadId: previousCodex.threadId, archivedAt: now(), dailySummaries: previousCodex.dailySummaries, records: previousAutoRecords });
       project.records = project.records.filter(record => record.managedBy !== 'codex-auto' || record.confirmed || record.manual);
       updates.codex = codexDefaults({ ...nextCodex, dailySummaries: [], history: null, summaryStatus: { state: 'idle', message: '', updatedAt: now() }, summaryArchives: archives, summaryDismissals: [] });
       if (project.dailyDesk) updates.dailyDesk = { days: {}, archives: [...(project.dailyDesk.archives || []), { threadId: previousCodex.threadId, days: project.dailyDesk.days || {}, overview: project.dailyDesk.overview, archivedAt: now() }] };
+    } else if (nextCodex.threadId !== previousCodex.threadId) {
+      // A replacement chat in the same repository continues the same project.
+      // Preserve daily evidence/checkpoints, summaries, drafts and dismissals.
+      updates.codex = codexDefaults({ ...nextCodex, history: null,
+        summaryStatus: { state: 'idle', message: '会话入口已更新，点击整理时接续本项目当日对话', updatedAt: now() },
+        summaryDismissals: (previousCodex.summaryDismissals || []).map(item => ({ ...item, threadId: nextCodex.threadId })),
+      });
     }
-    if (sourceChanged || devChanged || nextCodex.threadId !== previousCodex.threadId) {
+    if (sourceChanged || devChanged) {
       updates.requirementAnalysis = requirementAnalysisDefaults({ dismissedKeys: project.requirementAnalysis?.dismissedKeys || [], dismissedRequirements: project.requirementAnalysis?.dismissedRequirements || [], dismissedConfirmations: project.requirementAnalysis?.dismissedConfirmations || [] });
     }
     if (sourceChanged || devChanged || artifactChanged) {
@@ -674,10 +682,12 @@ class Store {
     return this._commit(project);
   }
 
-  setRequirementFilter(projectId, afterISO = '') {
+  setRequirementFilter(projectId, afterISO = '', mode = afterISO ? 'date' : 'all') {
     const project = this._project(projectId), value = sourceTimestamp(afterISO, '需求时间筛选');
-    if ((project.requirementsAfter || '') === value) return clone(project);
+    if (!['today','date','all'].includes(mode) || mode === 'date' && !value) throw new Error('需求日期筛选无效');
+    if ((project.requirementsAfter || '') === value && project.requirementsDateMode === mode) return clone(project);
     project.requirementsAfter = value;
+    project.requirementsDateMode = mode;
     return this._commit(project);
   }
 

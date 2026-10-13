@@ -502,7 +502,7 @@ test('日报合并不重复自动事项，保留已保存人工日报，删除�
   assert.doesNotMatch(report.text, /新增导出需求/);
 });
 
-test('更新同步时间保留摘要，换会话隔离旧自动稿并拒绝迟到结果', t => {
+test('同目录更换会话保留当天自动稿及人工成果，仍拒绝旧入口迟到结果', t => {
   const { store, project } = fixture(t);
   store.updateProject(project.id, { codex: { threadId: 'summary-thread' } });
   store.applyDailySummary(project.id, dailyInput('2026-10-09'));
@@ -511,17 +511,15 @@ test('更新同步时间保留摘要，换会话隔离旧自动稿并拒绝迟�
   assert.equal(p.codex.dailySummaries.length, 1);
   assert.equal(p.codex.summaryStatus.state, 'ready');
   p = store.updateProject(project.id, { codex: { threadId: 'another-thread' } });
-  assert.equal(p.codex.dailySummaries.length, 0);
+  assert.equal(p.codex.dailySummaries.length, 1);
   assert.equal(p.codex.summaryStatus.state, 'idle');
-  assert.equal(p.codex.summaryArchives[0].dailySummaries.length, 1);
-  assert.equal(p.codex.summaryArchives[0].records[0].title, '表格导入失败');
-  assert.equal(p.records.length, 1);
-  assert.equal(p.records[0].title, '人工工作');
+  assert.equal((p.codex.summaryArchives || []).length, 0);
+  assert.equal(p.records.length, 2);
+  assert.ok(p.records.some(record=>record.title==='人工工作'));
+  assert.ok(p.records.some(record=>record.title==='表格导入失败'));
   assert.throws(() => store.applyDailySummary(project.id, dailyInput('2026-10-09', 'late')), /会话已变化/);
   assert.throws(() => store.setSummaryStatus(project.id, { state: 'ready', threadId: 'summary-thread' }), /会话已变化/);
-  assert.equal(fs.existsSync(path.join(store.projectFolder(project.id), '自动整理', '2026-10-09.md')), false);
-  const archiveDir = path.join(store.projectFolder(project.id), '自动整理', '会话归档');
-  assert.ok(fs.readdirSync(archiveDir).some(name => fs.existsSync(path.join(archiveDir, name, '2026-10-09.md'))));
+  assert.equal(fs.existsSync(path.join(store.projectFolder(project.id), '自动整理', '2026-10-09.md')), true);
 });
 
 test('旧档案兼容每日摘要，公开模型设置不保存密钥', t => {
