@@ -25,7 +25,7 @@ async function run() {
   const sourceBefore = hash(await fs.readFile(source));
   const project = {
     requirementsDateMode:'all', id: 'ui-project-a', name: '客户报表助手', sourceDir, devDir, artifactDir: devDir, activeCycleId: 'cycle-a',
-    cycles: [{ id: 'cycle-a', name: '首次交付', status: '进行中' }], records: [], reports: [], deliveries: [],
+    cycles: [{ id: 'cycle-a', name: '首次交付', status: '进行中' }], records: [{id:'old-work',date:'2026-10-09',title:'历史有效工作',action:'历史处理',result:'历史成果',status:'已完成',confirmed:false,managedBy:'codex-auto',issueKey:'old-work'}], reports: [{date:'2026-10-09',text:'已保存的历史日报正文'}], deliveries: [],
     codex: {}, files: [{ id: 'source-a', name: '业务说明.md', path: source, kind: '原始资料', textPreview: '客户需要月度订单报表', description: '客户初始业务背景' }],
     requirementAnalysis: { status: { state: 'ready', message: '已整理可读取内容，部分资料尚未读取。', updatedAt: '2026-10-09T09:00:00Z' }, sourceCount: 3, coveragePartial: true, omittedCount: 3, warnings: ['业务材料超过单次范围，有 3 个片段未读取。', '客户截图.png：图片文字未识别。'] },
     requirements: [
@@ -65,6 +65,7 @@ ipcMain.handle('fde:request',async(_event,input)=>{
       if(!existing)throw new Error('待确认事项不存在');Object.assign(existing,p.input,{manual:true});broadcast();value=structuredClone(project);
     }else if(action==='requirement:filter'){project.requirementsAfter=p.after;project.requirementsDateMode=p.mode;broadcast();value=structuredClone(project);}
     else if(action==='project:select'){mock.state.settings.activeProjectId=p.id;broadcast();value=true;}
+    else if(action==='report:generate')value={text:'',date:p.date};
     else if(action==='codex:list')value={threads:[],candidates:[]};
     else throw new Error('隔离 UI 不支持此操作：'+action);
     return {ok:true,value};
@@ -227,6 +228,21 @@ app.on('window-all-closed',()=>app.quit());
     check(await page.locator('.requirement-list').count()===1&&await page.locator('.requirement-grid').count()===0,'全部日期仍使用相同纵向列表');
     await page.locator('[data-action="today-requirement-filter"]').click();await eventually(async()=>await page.locator('.requirement-card').count()===24,'当日按钮没有恢复动态今日筛选');
     check((await controls()).state.projects[0].requirementsDateMode==='today','当日模式持久化，跨日不固定在旧日期');
+    await page.locator('#requirement-history').selectOption(today);await eventually(async()=>await page.locator('#requirement-after').inputValue()===today,'需求历史日期入口没有生效');
+    check(await page.locator('.requirement-card').count()===24,'需求历史日期与当天筛选共用同一范围');
+    await page.locator('[data-route="records"]').first().click();
+    check(await page.locator('.record-card').count()===0,'新日空白不把历史工作重复计入当天');
+    await page.locator('#record-history').selectOption('2026-10-09');
+    check((await page.locator('.record-card').innerText()).includes('历史有效工作'),'工作记录可直接从历史日期恢复查看');
+    await page.locator('[data-route="reports"]').first().click();await page.locator('#report-history').selectOption('2026-10-09');
+    check((await page.locator('#report-preview').innerText()).includes('已保存的历史日报正文'),'日报历史日期展示已有人工正文');
+    await page.evaluate(value=>{globalThis.__fdeOriginalDate=Date;const Native=Date;globalThis.Date=class extends Native{constructor(...args){super(...(args.length?args:[value]));}static now(){return value;}};},midnight+86400000+60000);
+    await app.evaluate(({BrowserWindow},date)=>{for(const window of BrowserWindow.getAllWindows())window.webContents.send('fde:changed',{dayChanged:date});},new Date(midnight+86400000+60000).toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}));
+    await eventually(async()=>!(await page.locator('#today-label').innerText()).includes(new Date(midnight).getDate()+'日'),'跨日后顶部日期仍停留在启动日');
+    check(await page.locator('#report-date').inputValue()==='2026-10-09','跨日刷新日期标题时保留用户选择的历史日报');
+    await page.evaluate(()=>{globalThis.Date=globalThis.__fdeOriginalDate;});
+    await app.evaluate(({BrowserWindow},date)=>{for(const window of BrowserWindow.getAllWindows())window.webContents.send('fde:changed',{dayChanged:date});},today);
+    await page.locator('[data-route="requirements"]').first().click();
     await page.evaluate(()=>{document.querySelector('.requirement-list').scrollTop=0;window.scrollTo(0,0);});
     const desktop=path.join(output,`23-自动需求-UI桌面-${MODE}.png`);await page.screenshot({path:desktop,fullPage:true});screenshots.push(desktop);
     await app.evaluate(({BrowserWindow})=>{const window=BrowserWindow.getAllWindows().find(value=>value.webContents.getURL().endsWith('/index.html'));window.setMinimumSize(600,500);window.setContentSize(900,760);});

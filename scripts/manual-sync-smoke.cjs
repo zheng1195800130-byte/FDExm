@@ -34,7 +34,7 @@ async function run(){
   await page.locator('[data-action="daily-all"]').click();await until(async()=>!(await page.locator('[data-action="daily-all"]').isDisabled()),'全部整理未结束');check(inputs.length===2&&inputs[1].project===b.name,'全部整理仅对尚未整理的项目调用模型');
   const cached=JSON.stringify(await raw(a.id)),before=JSON.stringify((await current()).dailyDesk);await fs.appendFile(paths[0],rows(a.id,a.devDir,'after-click'));await pause(1800);check(JSON.stringify(await raw(a.id))===cached&&JSON.stringify((await current()).dailyDesk)===before,'新对话不改写已保存收录与结果');
   const reads=(await readerCounts()).length;await route('codex');await page.locator('#codex-original summary').click();await until(async()=> (await page.locator('#codex-turns').innerText()).includes('before-click'),'已保存原文未载入');check(!(await page.locator('#codex-turns').innerText()).includes('after-click')&&(await readerCounts()).length===reads,'原文缓存不偷读最新对话');
-  await clickCurrent();check(inputs.length===3,'下一次点击才处理新增对话');check(inputs[2].sources.filter(s=>s.id.startsWith('turn:')).every(s=>s.id==='turn:after-click'),'仅新增当日片段发送模型');
+  await clickCurrent();check(inputs.length===3,'下一次点击才处理新增对话');check(inputs[2].sources.filter(s=>s.id.startsWith('turn:')).every(s=>s.turnId==='after-click'),'仅新增当日片段发送模型');
   await fs.appendFile(paths[0],rows(a.id,a.devDir,'retry-work'));invalid=true;await clickCurrent();check((await current()).dailyDesk.days[DATE].status==='error','无效模型结果失败可见');check((await current()).dailyDesk.overview.progress.includes('3'),'失败保留上次成功结果');
   check((await page.locator('.daily-inline-status').innerText()).includes('本次整理未完成'),'概览仍展示整理失败原因');
   for(const name of ['requirements','records','reports']){

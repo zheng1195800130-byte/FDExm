@@ -95,3 +95,32 @@ test('升级旧协议密钥后仍按端点隔离，留空保存与切回保留�
 test('非 Windows 平台保留原来的系统保护接口', () => {
   assert.equal(createModelSecretStorage({ platform: 'linux', safeStorage: unavailable }), unavailable);
 });
+
+test('多个接口密钥分别保存，切换、重启与只清除当前接口不会覆盖其他密钥',t=>{
+ const {dataDir,store}=fixture(t),settings=new ModelSettings({dataDir,store,safeStorage:adapter(dataDir)}),other={...config,baseUrl:'https://other.example.com/v1'};
+ settings.save({config,apiKey:secret.apiKey});settings.save({config:other,apiKey:'mock-other-service-key'});
+ const restarted=new ModelSettings({dataDir,store:new Store(dataDir),safeStorage:adapter(dataDir)});
+ assert.equal(restarted.key(config),secret.apiKey);assert.equal(restarted.key(other),'mock-other-service-key');
+ restarted.save({config});assert.equal(restarted.public().keyConfigured,true);
+ restarted.save({config:other,clearKey:true});assert.equal(restarted.key(other),'');assert.equal(restarted.key(config),secret.apiKey);
+ restarted.save({config});assert.equal(restarted.public().keyStatus,'ready');
+ assert.doesNotMatch(JSON.stringify({state:store.getState(),public:restarted.public()}),/mock-other-service-key|mock-recovery-key/);
+});
+
+test('密钥主文件缺失从本档案加密备份恢复，配置保存失败回滚密钥，不从空值生成新配置',t=>{
+ const {dataDir,store}=fixture(t),settings=new ModelSettings({dataDir,store,safeStorage:adapter(dataDir)});
+ settings.save({config,apiKey:secret.apiKey});const saved=fs.readFileSync(settings.path);fs.unlinkSync(settings.path);
+ const restarted=new ModelSettings({dataDir,store:new Store(dataDir),safeStorage:adapter(dataDir)});
+ assert.equal(restarted.key(),secret.apiKey);assert.deepEqual(fs.readFileSync(settings.path),saved);
+ restarted.store.saveSummarizerSettings=()=>{throw new Error('Mock store save failure');};
+ assert.throws(()=>restarted.save({config,apiKey:'mock-new-key'}),/Mock store save/);
+ assert.deepEqual(fs.readFileSync(settings.path),saved);assert.deepEqual(fs.readFileSync(settings.backupPath),saved);assert.equal(restarted.key(),secret.apiKey);
+});
+
+test('主档案写入失败同时回滚内存中的接口选择及密钥，重启仍匹配原配置',t=>{
+ const {dataDir,store}=fixture(t),settings=new ModelSettings({dataDir,store,safeStorage:adapter(dataDir)});settings.save({config,apiKey:secret.apiKey});
+ const original=store._atomicWrite.bind(store);store._atomicWrite=(file,...args)=>{if(file===store.statePath)throw new Error('Mock disk failure');return original(file,...args);};
+ assert.throws(()=>settings.save({config:{...config,baseUrl:'https://other.example.com'},apiKey:'mock-new-service-key'}),/Mock disk failure/);
+ assert.equal(settings.config().baseUrl,config.baseUrl);assert.equal(settings.key(),secret.apiKey);
+ assert.equal(new ModelSettings({dataDir,store:new Store(dataDir),safeStorage:adapter(dataDir)}).key(),secret.apiKey);
+});

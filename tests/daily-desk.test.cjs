@@ -30,6 +30,33 @@ test('整理预设仅在人工整理的增量请求使用，保存或改风格�
 });
 test('上海日期按零点切换',()=>{assert.equal(localDate('2026-10-10T15:59:59Z'),'2026-10-10');assert.equal(localDate('2026-10-10T16:00:00Z'),'2026-10-11');});
 
+test('资料分段检查点跨日保留，次日接续未读尾部而不重发已处理片段',async t=>{
+ const f=await fixture(t),p=f.projects[0];fs.writeFileSync(path.join(p.sourceDir,'长业务资料.md'),'业务规则。'.repeat(5000));await f.store.scanProject(p.id);
+ await f.service.run(p.id,'2026-10-10');const first=new Set(f.calls[0].sources.map(source=>source.id));f.setTime('2026-10-11T03:00:00Z');await f.service.run(p.id,'2026-10-11');
+ assert.ok(f.calls[1].sources.length>0);assert.ok(f.calls[1].sources.every(source=>!first.has(source.id)));assert.equal((await f.service.run(p.id,'2026-10-11')).skipped,true);
+});
+
+test('确认单限量分批，遗漏只留待续读，已核实工作和需求仍保存且不自动重试',async t=>{
+ const f=await fixture(t),p=f.projects[0],id=p.id;
+ for(const name of ['初始确认单.md','补充确认单.md'])fs.writeFileSync(path.join(p.sourceDir,name),Array.from({length:15},(_,i)=>`${String(i+1).padStart(2,'0')} 业务问题${i+1}\n需确认：请客户确认规则${i+1}？`).join('\n'));
+ await f.store.scanProject(id);f.add('甲项目','work');let requests=0,omitted;
+ f.service.request=async(_c,_k,m)=>{requests++;const input=JSON.parse(m[1].content),points=input.sources.filter(s=>s.confirmationPoint);assert.ok(new Set(points.map(s=>s.confirmationPoint)).size<=8);const kept=requests===1?points.slice(0,-1):points;if(requests===1)omitted=points.at(-1).id;
+  return {overview:{progress:'进入用户测试'},items:input.sources.some(s=>s.id==='turn:work')?[{issueKey:'work',title:'完成业务功能',action:'完成导入',result:'待测试',sourceIds:['turn:work']}]:[],requirements:input.sources.some(s=>s.id==='turn:work')?[{requirementKey:'import',title:'生成导入表',sourceIds:['turn:work']}]:[],confirmations:kept.map(s=>({confirmationKey:'question-'+s.confirmationPoint,scenario:'规则确认',question:s.text,status:'待确认',sourceIds:[s.id]})),reportText:'甲项目——新增导入功能已完成待测试。',reportIssueKeys:['work']};};
+ const first=await f.service.run(id);let current=f.store.getState().projects[0],day=current.dailyDesk.days['2026-10-10'];
+ assert.equal(requests,1);assert.equal(first.pendingConfirmations,1);assert.equal(day.status,'ready');assert.equal(current.records.length,1);assert.equal(current.requirements.length,1);assert.ok(day.digest.reportText);assert.equal(day.sourceCheckpoints[omitted],undefined);assert.match(day.message,/仍有 1 组确认问题/);
+ for(let n=0;n<6;n++){const result=await f.service.run(id);if(!result.pending)break;}
+ current=f.store.getState().projects[0];assert.equal(current.requirementConfirmations.length,30);assert.equal(current.records.length,1);assert.equal((await f.service.run(id)).skipped,true);
+ // A metadata-only change must not ask the model to re-emit unchanged cards.
+ const file=path.join(p.sourceDir,'初始确认单.md');fs.utimesSync(file,new Date(),new Date(Date.now()+10000));await f.store.scanProject(id);const before=requests;assert.equal((await f.service.run(id)).skipped,true);assert.equal(requests,before);assert.equal(f.store.getState().projects[0].dailyDesk.days['2026-10-10'].unprocessedCount,0);
+});
+
+test('宽容分批模式丢弃过度合并的确认卡并保留待整理来源，不放行无效来源',()=>{
+ const sources=[{id:'file:a:question:01',confirmationPoint:'a:01',contextOnly:true},{id:'file:a:question:02',confirmationPoint:'a:02',contextOnly:true}];
+ const output={overview:{},items:[],requirements:[],confirmations:[{confirmationKey:'merged',scenario:'混在一起',question:'两个独立问题',sourceIds:sources.map(s=>s.id)}],reportText:''};
+ const result=validate(output,sources,[],{allowPartialConfirmations:true});assert.equal(result.confirmations.length,0);assert.deepEqual(result.pendingConfirmationPoints,['a:01','a:02']);
+ output.confirmations[0].sourceIds=['unknown'];assert.throws(()=>validate(output,sources,[],{allowPartialConfirmations:true}),/来源无效/);
+});
+
 test('整体概览与当天背景分别约束，输入包含人工项目阶段，日报保留模型的背景',async t=>{
  const f=await fixture(t),id=f.projects[0].id;
  f.store.updateProject(id,{stage:'客户测试',nextAction:'确认正式交付范围'});
@@ -123,7 +150,8 @@ test('同项更新可合并本次和已核实旧来源，旧附件不丢失',()=
  assert.equal(result.items.length,1);assert.deepEqual(result.items[0].turnIds,['old','new']);assert.deepEqual(result.items[0].attachments,[...oldWork.attachments,...newSource.attachments]);assert.match(result.items[0].sourceRef,/#turn=old\ncodex:project#turn=new/);
 });
 test('只有旧证据的修改、挪用其他事项证据或虚构来源仍拒绝',()=>{
- for(const [issueKey,sourceIds]of [['bill',['turn:old']],['unrelated',['turn:old','turn:new']],['bill',['turn:new','invented']]])assert.throws(()=>validate(incrementalOutput([{...oldWork,issueKey,result:'未经证实的新结论',sourceIds}]),[newSource],[oldWork]),/来源无效/);
+ const retained=validate(incrementalOutput([{...oldWork,result:'未经证实的新结论',sourceIds:['turn:old']}]),[newSource],[oldWork]).items[0];for(const [key,value]of Object.entries(oldWork))assert.deepEqual(retained[key],value);
+ for(const [issueKey,sourceIds]of [['unrelated',['turn:old','turn:new']],['bill',['turn:new','invented']]])assert.throws(()=>validate(incrementalOutput([{...oldWork,issueKey,result:'未经证实的新结论',sourceIds}]),[newSource],[oldWork]),/来源无效/);
 });
 test('相关新工作仅引用本次证据也自动保留已关联旧来源',()=>{
  const result=validate(incrementalOutput([{...oldWork,issueKey:'bill-complete',relatedIssueKeys:['bill'],result:'接通 ERP',sourceIds:['turn:new']}]),[newSource],[oldWork]);assert.equal(result.items.length,1);assert.deepEqual(result.items[0].turnIds,['new','old']);assert.deepEqual(result.items[0].attachments,[...oldWork.attachments,...newSource.attachments]);
@@ -162,9 +190,10 @@ test('超长证据续读尾部，预算不足不提前完成检查点，刷新�
 test('客户确认单按编号保留全部问题，日期只取真实对话引用，漏项拒绝完成',()=>{
  const file={id:'doc',name:'客户确认单.docx',path:'D:/资料/客户确认单.docx',mtime:'2026-10-10',textPreview:'标题\n01  字段来源\n需确认：备注取哪里？\n客户确认：_____\n02  容量口径\n需确认：50还是100？\n客户确认：_____'};
  const sources=fileEvidence(file,[{timestamp:'2026-10-10T08:10:00Z',assistantText:'已输出客户确认单.docx'}]);assert.equal(sources.length,2);assert.equal(sources[0].timestamp,'2026-10-10T08:10:00Z');assert.equal(fileEvidence(file)[0].timestamp,undefined);
- assert.throws(()=>validate(incrementalOutput([]),sources),/未提炼/);
- const output={...incrementalOutput([]),confirmations:sources.map((s,i)=>({confirmationKey:`question-${i}`,scenario:'业务场景',question:s.text,workaround:'暂沿用现行处理',status:'待确认',sourceIds:[s.id]}))};assert.equal(validate(output,sources).confirmations.length,2);
- assert.throws(()=>validate({...output,confirmations:[{...output.confirmations[0],sourceIds:sources.map(s=>s.id)}]},sources),/过度合并/);
+ assert.equal(validate(incrementalOutput([]),sources).confirmations.length,2);
+ const unstructured=sources.map(source=>({...source,structuredConfirmation:null}));assert.throws(()=>validate(incrementalOutput([]),unstructured),/未提炼/);
+ const output={...incrementalOutput([]),confirmations:sources.map((s,i)=>({confirmationKey:`question-${i}`,scenario:'业务场景',question:s.text,workaround:'暂沿用现行处理',status:'待确认',sourceIds:[s.id]}))};assert.equal(validate(output,unstructured).confirmations.length,2);
+ assert.throws(()=>validate({...output,confirmations:[{...output.confirmations[0],sourceIds:sources.map(s=>s.id)}]},unstructured),/过度合并/);
 });
 
 test('去掉浏览器环境说明，保留其后的真实请求与业务内容',()=>{assert.equal(conversationText('<in-app-browser-context source="ambient-ui-state">说明</in-app-browser-context>\n## My request:\n按模板重排，已完成待测试'),'## My request:\n按模板重排，已完成待测试');});

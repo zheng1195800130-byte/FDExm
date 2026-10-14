@@ -138,7 +138,21 @@ function extractContent(config, envelope) {
   return Array.isArray(content) ? content.filter(block => ['text', 'output_text'].includes(block?.type) && typeof block.text === 'string').map(block => block.text).join('\n') : content;
 }
 
-async function requestJson(config, apiKey, messages, fetchImpl = globalThis.fetch, { maxTokens = 7000 } = {}) {
+function sourceTransport(messages){
+ const copy=messages.map(message=>({...message})),user=copy.findLast(message=>message.role==='user');
+ let input;try{input=JSON.parse(user.content);}catch{throw new Error('整理来源输入格式无效');}
+ if(!Array.isArray(input.sources))throw new Error('整理来源输入格式无效');
+ const forward=new Map(),reverse=new Map();
+ input.sources=input.sources.map((source,index)=>{const alias=(source.id.startsWith('turn:')?'turn:':'file:')+'source'+(index+1);forward.set(source.id,alias);reverse.set(alias,source.id);return {...source,id:alias};});
+ for(const item of input.previousItems||[])if(Array.isArray(item.sourceIds))item.sourceIds=item.sourceIds.map(id=>forward.get(id)||id);
+ user.content=JSON.stringify(input);
+ const instruction='来源短编号约束：所有新增或更新事项的 sourceIds 必须逐字引用本次 sources[].id 的短编号，例如 turn:source1 或 file:source2。数字仅为示例，必须以本次输入实际列出的编号为准。不要根据编号位置、文件名或旧上下文自造来源。';
+ const system=copy.find(message=>message.role==='system');if(system)system.content+='\n'+instruction;else copy.unshift({role:'system',content:instruction});
+ return {messages:copy,restore(output){for(const field of ['items','requirements','confirmations'])if(Array.isArray(output?.[field]))for(const item of output[field])if(Array.isArray(item.sourceIds))item.sourceIds=item.sourceIds.map(id=>reverse.get(id)||id);return output;}};
+}
+async function requestJson(config, apiKey, messages, fetchImpl = globalThis.fetch, { maxTokens = 7000,sourceAliases=false } = {}) {
+  const transport=sourceAliases?sourceTransport(messages):null;
+  if(transport)messages=transport.messages;
   const normalized = validateConfig(config);
   const key = checkedKey(normalized, apiKey);
   const native = normalized.provider === 'anthropic';
@@ -172,7 +186,8 @@ async function requestJson(config, apiKey, messages, fetchImpl = globalThis.fetc
       let envelope;
       try { envelope = JSON.parse(raw); } catch { throw new Error('模型返回内容无法读取，请重试'); }
       guardSecret(JSON.stringify(envelope), key);
-      return parseJsonContent(extractContent(normalized, envelope), key);
+      const output=parseJsonContent(extractContent(normalized, envelope), key);
+      return transport?transport.restore(output):output;
     }
     throw new Error('模型接口参数不兼容，请检查设置');
   } finally { clearTimeout(timer); }

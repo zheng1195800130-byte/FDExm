@@ -8,6 +8,7 @@ const { validateConfig, requiresApiKey } = require('../src/core/summarizer.cjs')
 class ModelSettings {
   constructor({ dataDir, store, safeStorage }) {
     this.path = path.join(dataDir, 'model-key.encrypted');
+    this.backupPath = this.path + '.backup';
     this.store = store;
     this.safeStorage = safeStorage;
   }
@@ -18,56 +19,63 @@ class ModelSettings {
     if (!this.safeStorage.isEncryptionAvailable()) throw new Error('系统密钥保护暂不可用，请重启软件后再试');
     let bytes, value;
     try {
-      bytes = fs.readFileSync(this.path);
+      bytes = fs.readFileSync(fs.existsSync(this.path) ? this.path : this.backupPath);
       value = JSON.parse(this.safeStorage.decryptString(bytes));
-      if (!value || typeof value.baseUrl !== 'string' || typeof value.apiKey !== 'string' || !value.apiKey.trim() || value.apiKey.length > 4000 || /[\r\n]/.test(value.apiKey)) throw new Error('无效密钥');
+      const entries=this._entries(value);
+      if(!entries.length||entries.length>32||entries.some(entry=>typeof entry.baseUrl!=='string'||!entry.baseUrl||typeof entry.provider!=='string'||typeof entry.apiKey!=='string'||!entry.apiKey.trim()||entry.apiKey.length>4000||/[\r\n]/.test(entry.apiKey)))throw new Error('无效密钥');
     } catch { throw new Error('已保存的模型密钥无法读取，自动恢复未成功；原文件已保留'); }
     if (this.safeStorage.shouldReEncrypt?.(bytes)) {
       const encrypted = this.safeStorage.encryptString(JSON.stringify({ ...value, provider: value.provider || this.config().provider }));
       // Preserve the original encrypted bytes before the one-time upgrade.
       const backup = this.path + '.legacy';
       if (!fs.existsSync(backup)) fs.writeFileSync(backup, bytes, { flag: 'wx', mode: 0o600 });
-      if (!fs.readFileSync(this.path).equals(bytes)) throw new Error('模型密钥正在其他窗口更新，请重试');
+      if (fs.existsSync(this.path)&&!fs.readFileSync(this.path).equals(bytes)) throw new Error('模型密钥正在其他窗口更新，请重试');
       this._persistEncrypted(encrypted);
     }
+    else if(!fs.existsSync(this.path))this._persistEncrypted(bytes);
+    else if(!fs.existsSync(this.backupPath)){try{this._atomicEncrypted(this.backupPath,bytes);}catch{/* A backup failure must not hide a readable key. */}}
     return value;
   }
-  _writeSecret(config, apiKey) {
+  _entries(value) { return value?.version===2&&Array.isArray(value.entries)?value.entries:value?[{...value,provider:value.provider||this.config().provider}]:[]; }
+  _matches(entry,config) { return entry.provider===config.provider&&entry.baseUrl===config.baseUrl; }
+  _writeEntries(entries) {
     if (!this.safeStorage.isEncryptionAvailable()) throw new Error('系统密钥保护暂不可用，密钥没有保存');
-    const encrypted = this.safeStorage.encryptString(JSON.stringify({ baseUrl: config.baseUrl, provider: config.provider, apiKey }));
+    if(entries.length>32)throw new Error('已保存接口数量达到上限，请先清除不用的接口密钥');
+    const encrypted = this.safeStorage.encryptString(JSON.stringify({ version:2,entries }));
     this._persistEncrypted(encrypted);
   }
   _persistEncrypted(encrypted) {
-    const temporary = `${this.path}.${randomUUID()}.tmp`;
-    try { fs.writeFileSync(temporary, encrypted, { flag: 'wx', mode: 0o600 }); fs.renameSync(temporary, this.path); }
+    this._atomicEncrypted(this.path,encrypted);
+    this._atomicEncrypted(this.backupPath,encrypted);
+  }
+  _atomicEncrypted(file,encrypted) {
+    const temporary = `${file}.${randomUUID()}.tmp`;
+    try { fs.writeFileSync(temporary, encrypted, { flag: 'wx', mode: 0o600 }); fs.renameSync(temporary, file); }
     finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
   }
   key(config = this.config()) {
-    if (!fs.existsSync(this.path)) return '';
+    if (!fs.existsSync(this.path)&&!fs.existsSync(this.backupPath)) return '';
     const value = this._readSecret();
-    const provider = value.provider || this.config().provider;
-    return value.baseUrl === config.baseUrl && provider === config.provider && typeof value.apiKey === 'string' ? value.apiKey : '';
+    return this._entries(value).find(entry=>this._matches(entry,config))?.apiKey||'';
   }
   public() {
     const config = { ...this.config(), keyRequired: requiresApiKey(this.config()) };
-    try { return { ...config, keyConfigured: !!this.key(config) }; }
-    catch { return { ...config, keyConfigured: false, keyError: '已保存密钥，但读取失败；原文件已保留，请重启软件后重试' }; }
+    try { const keyConfigured=!!this.key(config);return { ...config,keyConfigured,keyStatus:keyConfigured?'ready':fs.existsSync(this.path)?'other-service':'missing' }; }
+    catch { return { ...config, keyConfigured: false,keyStatus:'unreadable', keyError: '已保存密钥，但读取失败；原文件已保留，请重启软件后重试' }; }
   }
   save({ config, apiKey, clearKey = false } = {}) {
     const next = validateConfig(config);
     if (apiKey !== undefined && (typeof apiKey !== 'string' || apiKey.length > 4000 || /[\r\n]/.test(apiKey))) throw new Error('API Key 格式不正确');
     const secret = typeof apiKey === 'string' ? apiKey.trim() : '';
-    if (secret) {
-      this._writeSecret(next, secret);
-    } else if (clearKey) {
-      for (const file of [this.path, this.path + '.legacy']) if (fs.existsSync(file)) fs.unlinkSync(file);
-    }
-    else if (fs.existsSync(this.path)) {
-      // Bind old 0.2.0 encrypted files to their original protocol before changing settings.
-      const previous = this._readSecret();
-      if (!previous.provider && typeof previous.apiKey === 'string') this._writeSecret({ ...this.config(), baseUrl: previous.baseUrl }, previous.apiKey);
-    }
-    this.store.saveSummarizerSettings(next);
+    const entries=fs.existsSync(this.path)||fs.existsSync(this.backupPath)?this._entries(this._readSecret()):[];
+    const files=[this.path,this.backupPath,this.path+'.legacy'],snapshot=files.map(file=>fs.existsSync(file)?fs.readFileSync(file):null);
+    try{
+      if(secret)this._writeEntries([...entries.filter(entry=>!this._matches(entry,next)),{baseUrl:next.baseUrl,provider:next.provider,apiKey:secret}]);
+      else if(clearKey){const remaining=entries.filter(entry=>!this._matches(entry,next));if(remaining.length)this._writeEntries(remaining);else for(const file of files)if(fs.existsSync(file))fs.unlinkSync(file);}
+      // Bind legacy files before changing protocol, and keep a recovery copy.
+      else if(entries.length)this._writeEntries(entries);
+      this.store.saveSummarizerSettings(next);
+    }catch(error){for(let index=0;index<files.length;index++){if(snapshot[index])this._atomicEncrypted(files[index],snapshot[index]);else if(fs.existsSync(files[index]))fs.unlinkSync(files[index]);}throw error;}
     return this.public();
   }
 }

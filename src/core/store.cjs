@@ -376,7 +376,11 @@ class Store {
     return this.getState();
   }
 
-  saveSummarizerSettings(config) { return this.setSettings({ summarizer: config }); }
+  saveSummarizerSettings(config) {
+    const previous=clone(this.state.settings);
+    try{return this.setSettings({summarizer:config});}
+    catch(error){this.state.settings=previous;throw error;}
+  }
 
   projectFolder(projectId) { return this._projectDir(projectId); }
 
@@ -1089,7 +1093,9 @@ class Store {
     date = dateValue(date);
     project.dailyDesk ||= { days: {} };
     project.dailyDesk.days ||= {};
-    project.dailyDesk.days[date] = { ...project.dailyDesk.days[date], ...clone(patch) };
+    const {fileCheckpoints,...dayPatch}=clone(patch);
+    if(fileCheckpoints)project.dailyDesk.fileCheckpoints=fileCheckpoints;
+    project.dailyDesk.days[date] = { ...project.dailyDesk.days[date], ...dayPatch };
     this._persist();
     return clone(project.dailyDesk.days[date]);
   }
@@ -1110,7 +1116,7 @@ class Store {
     materialTags.mergeAnnotations({...next,managementDir:this._projectDir(projectId)},input.materialTags||[],'model');
     next.dailyDesk ||= { days: {} };
     next.dailyDesk.days ||= {};
-    next.dailyDesk.days[date] = { ...next.dailyDesk.days[date], digest: input.digest, processed: input.processed, sourceCheckpoints:input.sourceCheckpoints || {},evidenceVersion:input.evidenceVersion || 0,pendingFiles:input.pendingFiles || 0, pending: input.pending, unprocessedCount: input.pending, partial: input.partial, organizedAt: time, status: 'ready', message: input.pending ? `已整理一批，仍有 ${input.pending} 项待整理` : input.partial ? '已整理可读取内容，原会话读取范围受限' : '已整理，新增内容收录后可再次点击整理' };
+    next.dailyDesk.days[date] = { ...next.dailyDesk.days[date], digest: input.digest, processed: input.processed, sourceCheckpoints:input.sourceCheckpoints || {},evidenceVersion:input.evidenceVersion || 0,pendingFiles:input.pendingFiles || 0,pendingConfirmations:input.pendingConfirmations||0, pending: input.pending, unprocessedCount: input.pending, partial: input.partial, organizedAt: time, status: 'ready', message: input.pendingConfirmations ? `已保存本批成果，仍有 ${input.pendingConfirmations} 组确认问题待整理` : input.pending ? `已整理一批，仍有 ${input.pending} 项待整理` : input.partial ? '已整理可读取内容，原会话读取范围受限' : '已整理，新增内容收录后可再次点击整理' };
     next.dailyDesk.fileCheckpoints = input.fileCheckpoints;
     // An older day must never replace the current project introduction/progress.
     if (!next.dailyDesk.overviewDate || date >= next.dailyDesk.overviewDate) { next.dailyDesk.overview = input.digest.overview; next.dailyDesk.overviewDate = date; }

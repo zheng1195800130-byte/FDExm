@@ -18,7 +18,7 @@ async function main() {
   const key = 'fde-normal-startup-mock-key'; let requests = 0;
   const server = http.createServer((req, res) => {
     requests++;
-    const ok = req.url === '/v1/models' && req.headers.authorization === `Bearer ${key}`;
+    const ok = req.url === '/v1/models' && req.headers.authorization === `Bearer ${key}` || req.url === '/other/v1/models' && req.headers.authorization === 'Bearer fde-other-startup-mock-key';
     res.writeHead(ok ? 200 : 401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(ok ? { data: [{ id: 'normal-mock-model' }] } : { error: { message: 'Mock authentication failed' } }));
   });
@@ -59,13 +59,22 @@ async function main() {
       assert.equal(settings.keyConfigured, true); assert.ok(!settings.keyError);
       await page.evaluate(() => window.fde.request('model:list'));
       assert.equal(requests, launch + 1, '普通进程使用恢复后的同一密钥请求本机模拟服务');
+      const other={...config,baseUrl:config.baseUrl.replace('/v1','/other/v1')};
+      if(launch===0){
+        await page.evaluate(input=>window.fde.request('model:save',{config:input,apiKey:'fde-other-startup-mock-key'}),other);
+        await page.evaluate(input=>window.fde.request('model:save',{config:input}),config);
+      }else{
+        await page.evaluate(input=>window.fde.request('model:list',{config:input}),other);
+        assert.equal(requests,3,'普通重启后另一接口的密钥也仍可使用');
+        assert.ok(fs.existsSync(keyFile+'.backup'));
+      }
       await page.evaluate(() => window.fde.windowAction('quit')).catch(() => {});
       await exited; child = null; await browser.close(); browser = null;
       assert.ok(fs.readFileSync(keyFile).subarray(0, HEADER.length).equals(HEADER));
       assert.deepEqual(fs.readFileSync(keyFile + '.legacy'), legacy);
       for (const relative of ['runtime/browser/Local State', 'runtime/Local State']) fs.rmSync(path.join(dataDir, relative), { force: true });
     }
-    const report = { status: 'passed', checks: 10, launches: 2, requestCount: requests, fixture, mainProcessDebugger: false, realDataAccessed: false, service: '本机模拟服务；无真实密钥或外部模型请求' };
+    const report = { status: 'passed', checks: 14, launches: 2, requestCount: requests, fixture, mainProcessDebugger: false, realDataAccessed: false, service: '本机模拟服务；无真实密钥或外部模型请求' };
     fs.writeFileSync(path.join(out, '普通启动密钥验收.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report));
   } finally {
