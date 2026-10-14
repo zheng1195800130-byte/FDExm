@@ -78,7 +78,7 @@ function renderGlobalActions(){
 function dailyStatusText(p,date){
   const day=p.dailyDesk?.days?.[date]||{},saved=day.organizedAt||summaryFor(p,date)?.updatedAt;
   const last=saved?`上次成功整理 ${requirementTime(saved)}`:'',pending=day.unprocessedCount||0;
-  const coverage=day.threadCount?` · ${day.threadCount} 个会话 · ${day.count||0} 轮对话`:'',warning=day.captureWarning?` · ${brief(day.captureWarning,160)}`:'';
+  const coverage=day.threadCount?` · ${day.threadCount} 个会话 · ${day.count||0} 轮对话`:'',warning=(day.unfinishedCount?` · ${day.unfinishedCount} 轮对话尚未结束，结束后可再次整理`:'')+(day.captureWarning?` · ${brief(day.captureWarning,160)}`:'');
   if(dailyBusy||day.status==='running')return `正在整理 ${date} 的新增内容，已有内容保留。`;
   if(day.status==='error')return `本次整理未完成：${brief(day.message||'请稍后手动重试',150)}。${last?last+'，显示上次保存内容。':'已有记录保留。'}`;
   if(saved)return `${last}${coverage}${pending?` · 上次收录还有 ${pending} 项待整理`:''}${day.partial?' · 部分原文未完整收录或已缩略':''}${warning}`;
@@ -139,16 +139,17 @@ function requirementAfterISO(value){
   if(requirementAfterInput(iso)!==value)throw new Error('请选择有效的日期。');return iso;
 }
 function requirementDate(p){return p.requirementsDateMode==='all'?'':p.requirementsDateMode==='date'?requirementAfterInput(p.requirementsAfter):today();}
+function requirementItemDate(item){return requirementAfterInput(item.sourceLastAt)||(validDate(item.organizedDate)?item.organizedDate:'');}
 function requirementView(p){
   const allItems=p.requirements||[],allConfirmations=(Array.isArray(p.requirementConfirmations)?p.requirementConfirmations:[]).filter(item=>item&&typeof item.question==='string'&&item.question.trim());
-  const date=requirementDate(p),filtered=!!date,matches=item=>!filtered||requirementAfterInput(item.sourceLastAt)===date;
+  const date=requirementDate(p),filtered=!!date,matches=item=>!filtered||requirementItemDate(item)===date;
   const items=allItems.filter(matches),knownQuestions=new Set(allConfirmations.map(item=>confirmationQuestion(item.question)));
   const questions=requirementQuestions(items).filter(({text})=>!knownQuestions.has(confirmationQuestion(text)));
   const confirmations=allConfirmations.filter(matches),active=confirmations.filter(item=>item.status!=='已解决'),resolved=confirmations.filter(item=>item.status==='已解决');
-  const undated=[...allItems,...allConfirmations].filter(item=>!Number.isFinite(requirementTimestamp(item.sourceLastAt))).length;
+  const undated=[...allItems,...allConfirmations].filter(item=>!requirementItemDate(item)).length;
   return {items,questions,active,resolved,filtered,undated,date};
 }
-function requirementTimeMarkup(item){const time=requirementTime(item.sourceLastAt);return `<div class="requirement-source-time">${time?`Codex 对话 · ${esc(time)}`:'暂无对话时间'}</div>`;}
+function requirementTimeMarkup(item){const time=requirementTime(item.sourceLastAt);return `<div class="requirement-source-time">${time?`Codex 对话 · ${esc(time)}`:validDate(item.organizedDate)?`资料整理 · ${esc(item.organizedDate)}`:'暂无对话时间'}</div>`;}
 function requirementSourceMarkup(p,item){
   const ids=(Array.isArray(item.sourceIds)?item.sourceIds:[]).filter(value=>typeof value==='string'),refs=sourceText(item.sourceRef).split('\n').map(value=>value.trim()).filter(Boolean);
   const files=(p.files||[]).filter(file=>ids.some(id=>id===file.id||id.startsWith(`file:${file.id}:`))||refs.includes(file.path)||refs.includes(file.originalPath));
@@ -167,7 +168,7 @@ function renderRequirements(p){
   const running=dailyBusy||p.dailyDesk?.days?.[today()]?.status==='running';
   const hasMaterials=safeFiles(p).some(file=>!file.missing&&['原始资料','补充资料'].includes(file.kind)),hasInput=hasMaterials||!!p.codex?.threadId;
   $('workspace').innerHTML=heading('REQUIREMENTS','需求清单','',actionButton('copy-requirements','复制需求摘要','copy',items.length||questions.length||active.length?'':'disabled','primary'))+
-  `<div class="requirement-time-filter"><label for="requirement-after">对话日期 <input id="requirement-after" type="date" value="${esc(view.date)}"></label>${historySelect('requirement-history',[...new Set([...(p.requirements||[]),...(p.requirementConfirmations||[])].map(item=>requirementAfterInput(item.sourceLastAt)).filter(Boolean))].sort((a,b)=>b.localeCompare(a)),view.date)}${actionButton('today-requirement-filter','当日',null,'',p.requirementsDateMode!=='date'&&p.requirementsDateMode!=='all'?'small active':'small')}${actionButton('clear-requirement-filter','全部日期',null,'',!view.filtered?'small active':'small')}${view.undated?`<button id="requirement-undated" class="link-btn" data-action="clear-requirement-filter">无日期 ${view.undated}</button>`:''}</div>`+
+  `<div class="requirement-time-filter"><label for="requirement-after">日期 <input id="requirement-after" type="date" value="${esc(view.date)}"></label>${historySelect('requirement-history',[...new Set([...(p.requirements||[]),...(p.requirementConfirmations||[])].map(requirementItemDate).filter(Boolean))].sort((a,b)=>b.localeCompare(a)),view.date)}${actionButton('today-requirement-filter','当日',null,'',p.requirementsDateMode!=='date'&&p.requirementsDateMode!=='all'?'small active':'small')}${actionButton('clear-requirement-filter','全部日期',null,'',!view.filtered?'small active':'small')}${view.undated?`<button id="requirement-undated" class="link-btn" data-action="clear-requirement-filter">无日期 ${view.undated}</button>`:''}</div>`+
   `<section class="panel requirement-section" aria-labelledby="requirement-business-title"><div class="panel-head requirement-section-head"><div><h2 id="requirement-business-title">业务需求 <span>${items.length}</span></h2></div><button class="link-btn" data-action="new-requirement">${icon('plus',13)}补充需求</button></div>`+
   (items.length?`<div class="requirement-list panel-body requirement-scroll" role="region" aria-label="业务需求列表" tabindex="0">${items.map((r,i)=>`<article class="requirement-card" data-requirement="${esc(r.id)}"><div class="requirement-head"><div><h3>${esc(r.title)}</h3></div><div class="actions">${badge(r.status)}<button class="link-btn" data-action="edit-requirement" data-item="${esc(r.id)}" aria-label="编辑 ${esc(r.title)}">编辑 ${icon('edit',13)}</button></div></div><p class="description">${esc(r.description||'暂无补充说明')}</p>${requirementTimeMarkup(r)}${requirementSourceMarkup(p,r)}</article>`).join('')}</div>`:view.filtered?empty('当日暂无业务需求','','','requirements'):empty(!hasInput?'先补充业务资料':running?'正在整理业务需求':!modelReady?'先配置整理模型':'等待业务需求整理',!hasInput?'提供客户业务资料，或关联包含初次业务沟通的 Codex 会话。':running?'整理完成后会自动显示，无需手动填写。':!modelReady?'请在顶部模型设置中配置整理模型。':'在项目概览点击整理当前项目后，需求会显示在这里。',!hasInput?actionButton('add-files','补充资料','upload','','small')+actionButton('bind-codex','关联会话','link','','small'):'','requirements'))+`</section>`+
   `<section id="requirement-questions" class="panel requirement-questions" aria-labelledby="requirement-questions-title"><div class="panel-head"><h2 id="requirement-questions-title">待确认问题 <span>${questions.length+active.length}</span></h2></div><div class="panel-body requirement-scroll" role="region" aria-label="待确认问题列表" tabindex="0">${active.map(item=>confirmationMarkup(p,item)).join('')}${questions.map(({text,item})=>`<div class="requirement-question" data-requirement="${esc(item.id)}"><div><p>${esc(text)}</p><span>对应需求：${esc(item.title)}</span>${requirementTimeMarkup(item)}</div><button class="link-btn" data-action="edit-requirement" data-item="${esc(item.id)}" aria-label="编辑 ${esc(item.title)} 的待确认问题">编辑</button></div>`).join('')}${!active.length&&!questions.length?`<div class="empty-inline">${view.filtered?'当日暂无待确认问题。':(p.requirements||[]).length?'暂无已整理出的待确认问题。':'业务需求与暂缓事项整理后，会集中显示在这里。'}</div>`:''}${resolved.length?`<details id="requirement-resolved" class="requirement-resolved"><summary>已解决事项 (${resolved.length})</summary>${resolved.map(item=>confirmationMarkup(p,item,true)).join('')}</details>`:''}</div></section>`;
@@ -183,7 +184,7 @@ async function organizeDaily(all=false,date=today()){
   const p=project();if(!p||dailyBusy)return;
   if(!all&&!p.codex?.threadId){await bindCodex();return;}
   dailyBusy=true;resetOriginalConversation();render();
-  try{const result=await request(all?'daily:all':'daily:run',{id:p.id,date});const errors=result.results?.filter(r=>r.error)||[];await refresh();notify(errors.length?errors.map(r=>`${r.name}：${r.error}`).join('；'):all?`已检查 ${result.results.length} 个项目，仅新增内容调用模型`:result.skipped?result.message:result.pendingConfirmations?`已保存本批成果，仍有 ${result.pendingConfirmations} 组确认问题待整理`:result.pending?`本批已整理，还有 ${result.pending} 项待整理`:'已更新项目进展、需求确认、工作记录和日报',!!errors.length);}
+  try{const result=await request(all?'daily:all':'daily:run',{id:p.id,date});const errors=result.results?.filter(r=>r.error)||[];if(!errors.some(r=>r.id===p.id)){recordDate=reportDate=codexDate=date;}await refresh();const message=all?`已检查 ${result.results.length} 个项目，成果已保存本地`:result.skipped?result.message:result.workCount?`已保存本地：${result.workCount} 项工作记录${result.reportSaved?'及日报':''}`:result.unfinishedCount?'已保存项目和需求；当天对话还在进行，回复结束后可再次整理':'已保存项目和需求；当天暂无可提炼的工作内容';const pending=result.pending?`，还有 ${result.pending} 项待整理`:'';notify(errors.length?errors.map(r=>`${r.name}：${r.error}`).join('；'):result.archiveWarning||message+pending,!!errors.length||!!result.archiveWarning);}
   finally{dailyBusy=false;render();}
 }
 function historyDates(p){return [...new Set([...(p.records||[]).map(item=>item.date),...(p.reports||[]).map(item=>item.date),...(p.codex?.dailySummaries||[]).map(item=>item.date),...Object.entries(p.dailyDesk?.days||{}).filter(([,day])=>day.digest?.reportText).map(([date])=>date)])].filter(validDate).sort((a,b)=>b.localeCompare(a));}
@@ -418,7 +419,7 @@ function requirementCopyText(p){
   const business=items.map(item=>`- [${item.status}] ${item.title}${item.description?`：${brief(item.description,180)}`:''}（${time(item)}）`).join('\n');
   const confirmations=active.map(item=>`- 场景：${item.scenario||'场景尚未补充'}（${time(item)}）${item.workaround?`\n  临时处理：${item.workaround}`:''}\n  待确认：${item.question}`);
   confirmations.push(...questions.map(({text,item})=>`- ${text}（${item.title}；${time(item)}）`));
-  return `${p.name} · 需求摘要${requirementDate(p)?`\n对话日期：${requirementDate(p)}`:'\n全部日期'}\n\n业务需求\n${business||'当前范围内暂无业务需求。'}\n\n待确认问题\n${confirmations.join('\n')||'暂无已整理出的待确认问题。'}`;
+  return `${p.name} · 需求摘要${requirementDate(p)?`\n日期：${requirementDate(p)}`:'\n全部日期'}\n\n业务需求\n${business||'当前范围内暂无业务需求。'}\n\n待确认问题\n${confirmations.join('\n')||'暂无已整理出的待确认问题。'}`;
 }
 function recordForm(input={}){
   const p=project(), draft=input.confirmed===undefined?false:input.confirmed;

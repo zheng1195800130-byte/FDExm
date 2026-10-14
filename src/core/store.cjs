@@ -1088,6 +1088,19 @@ class Store {
     return this._commit(project);
   }
 
+  saveOrganizedReport(projectId, date) {
+    date=dateValue(date);
+    const project=this._project(projectId),day=project.dailyDesk?.days?.[date],existing=project.reports.find(report=>report.date===date);
+    if(existing&&!existing.autoArchived)return false;
+    if(day?.digest?.workEvidenceVersion!==2||!day.digest.reportText?.trim())return false;
+    const text=this.generateReport(projectId,date).text;
+    if(!text.trim())return false;
+    const folder=this._projectDir(projectId);
+    if(existing?.text===text&&!project.archiveWarning&&fs.existsSync(path.join(folder,'日报',date+'.md'))&&fs.existsSync(path.join(folder,'工作记录',date+'.md')))return false;
+    this.saveReport(projectId,date,text,{automatic:true});
+    return true;
+  }
+
   saveDailyDesk(projectId, date, patch = {}) {
     const project = this._project(projectId);
     date = dateValue(date);
@@ -1107,11 +1120,16 @@ class Store {
     // real commit; malformed model output cannot leave a half-applied project.
     const shadow = Object.create(Store.prototype);
     shadow.state = clone(this.state);
+    shadow.dataDir = this.dataDir;
     shadow._persist = () => {};
     shadow._commit = value => clone(value);
     shadow.applyRequirementSummary(projectId, { items: input.requirements, confirmations: input.confirmations, method: 'model', threadId: input.threadId });
-    shadow.applyDailySummary(projectId, { date, items: input.items, method: 'model', fingerprint: input.fingerprint, threadId: input.threadId });
+    shadow.applyDailySummary(projectId, { date, items: input.items, reportText:input.digest.reportText, method: 'model', fingerprint: input.fingerprint, threadId: input.threadId });
     const next = shadow._project(projectId), time = now();
+    for(const field of ['requirements','requirementConfirmations']){
+      const previous=new Map((project[field]||[]).map(item=>[item.id,JSON.stringify(item)]));
+      for(const item of next[field]||[])if(JSON.stringify(item)!==previous.get(item.id))item.organizedDate=date;
+    }
     next.materialAnnotations ||= {};
     materialTags.mergeAnnotations({...next,managementDir:this._projectDir(projectId)},input.materialTags||[],'model');
     next.dailyDesk ||= { days: {} };
@@ -1120,6 +1138,7 @@ class Store {
     next.dailyDesk.fileCheckpoints = input.fileCheckpoints;
     // An older day must never replace the current project introduction/progress.
     if (!next.dailyDesk.overviewDate || date >= next.dailyDesk.overviewDate) { next.dailyDesk.overview = input.digest.overview; next.dailyDesk.overviewDate = date; }
+    shadow.saveOrganizedReport(projectId,date);
     Object.assign(project, next);
     return this._commit(project);
   }

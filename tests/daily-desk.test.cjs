@@ -30,6 +30,40 @@ test('整理预设仅在人工整理的增量请求使用，保存或改风格�
 });
 test('上海日期按零点切换',()=>{assert.equal(localDate('2026-10-10T15:59:59Z'),'2026-10-10');assert.equal(localDate('2026-10-10T16:00:00Z'),'2026-10-11');});
 
+test('整理立即保存工作和日报到本地文件，重启可读，增量更新自动日报而不覆盖人工正文',async t=>{
+ const f=await fixture(t),id=f.projects[0].id,date='2026-10-10';f.add('甲项目','first');const result=await f.service.run(id);
+ const folder=f.store.projectFolder(id),reportFile=path.join(folder,'日报',date+'.md'),workFile=path.join(folder,'工作记录',date+'.md');
+ assert.equal(result.workCount,1);assert.equal(result.reportSaved,true);assert.ok(fs.readFileSync(workFile,'utf8').includes('完善提单导入'));
+ let saved=new Store(f.store.dataDir).getState().projects[0];assert.equal(fs.readFileSync(reportFile,'utf8'),saved.reports[0].text);assert.equal(saved.reports[0].autoArchived,true);assert.equal(saved.reports[0].text,saved.dailyDesk.days[date].digest.reportText);
+ f.service.request=async()=>({overview:{},requirements:[],confirmations:[],items:[{issueKey:'bill',title:'完善提单导入',action:'增加预览',result:'预览完成待测试',sourceIds:['turn:second']}],reportIssueKeys:['bill'],reportText:'甲项目——提单导入增加预览，待客户测试。'});
+ f.add('甲项目','second');await f.service.run(id);assert.match(fs.readFileSync(reportFile,'utf8'),/增加预览/);
+ f.store.saveReport(id,date,'人工保存的日报');f.add('甲项目','third');f.service.request=async()=>({overview:{},requirements:[],confirmations:[],items:[],reportText:''});await f.service.run(id);
+ saved=new Store(f.store.dataDir).getState().projects[0];assert.equal(saved.reports[0].text,'人工保存的日报');assert.equal(fs.readFileSync(reportFile,'utf8'),'人工保存的日报');assert.equal(f.calls.length,1);
+});
+
+test('旧版只有日报摘要时，无新增整理也补存本地日报，不调用模型',async t=>{
+ const f=await fixture(t),id=f.projects[0].id,date='2026-10-10';f.add('甲项目','done');await f.service.run(id);
+ f.store.state.projects[0].reports=[];fs.unlinkSync(path.join(f.store.projectFolder(id),'日报',date+'.md'));f.store._persist();
+ const result=await f.service.run(id);assert.equal(result.skipped,true);assert.equal(result.reportSaved,true);assert.equal(f.calls.length,1);assert.ok(fs.readFileSync(path.join(f.store.projectFolder(id),'日报',date+'.md'),'utf8').trim());
+ fs.unlinkSync(path.join(f.store.projectFolder(id),'日报',date+'.md'));await f.service.run(id);assert.ok(fs.existsSync(path.join(f.store.projectFolder(id),'日报',date+'.md')));assert.equal(f.calls.length,1);
+});
+
+test('大量确认资料不挤掉当天对话，需求与确认资料保留真实整理日期而不伪造对话时间',async t=>{
+ const f=await fixture(t),p=f.projects[0];
+ fs.writeFileSync(path.join(p.sourceDir,'客户确认单.md'),Array.from({length:60},(_,i)=>`${String(i+1).padStart(2,'0')} 业务问题${i+1}\n当前处理：${'业务背景'.repeat(100)}\n需确认：具体规则如何处理？\n客户确认：_____`).join('\n'));
+ await f.store.scanProject(p.id);f.add('甲项目','today');
+ f.service.request=async(_c,_k,m)=>{const input=JSON.parse(m[1].content);f.calls.push(input);assert.ok(input.sources.some(s=>s.id==='turn:today'));return {overview:{},items:[{issueKey:'work',title:'完成业务修改',action:'修正导入',sourceIds:['turn:today']}],requirements:[{requirementKey:'background',title:'客户业务规则',sourceIds:[input.sources.find(s=>s.contextOnly).id]}],confirmations:[],reportIssueKeys:['work'],reportText:'甲项目——修正导入，待验证。'};};
+ const result=await f.service.run(p.id);assert.equal(result.workCount,1);assert.equal(result.reportSaved,true);assert.ok(result.pending>0);
+ const saved=new Store(f.store.dataDir).getState().projects[0];assert.equal(saved.requirements[0].organizedDate,'2026-10-10');assert.equal(saved.requirements[0].sourceLastAt,'');assert.equal(saved.requirementConfirmations[0].organizedDate,'2026-10-10');
+});
+
+test('当天对话未完成时明确返回等待状态，结束后下次点击才保存工作与日报',async t=>{
+ const f=await fixture(t),id=f.projects[0].id;f.reader.readThread=async()=>({turns:[{id:'ongoing',date:'2026-10-10',timestamp:'2026-10-10T03:00:00Z',userText:'修复导入问题',assistantText:'正在检查',completed:false}]});
+ const first=await f.service.run(id);assert.equal(first.skipped,true);assert.equal(first.unfinishedCount,1);assert.match(first.message,/对话还在进行/);assert.equal(f.calls.length,0);assert.equal(f.store.getState().projects[0].records.length,0);
+ f.reader.readThread=async()=>({turns:[{id:'ongoing',date:'2026-10-10',timestamp:'2026-10-10T03:00:00Z',userText:'修复导入问题',assistantText:'已完成导入修复',completed:true}]});
+ const second=await f.service.run(id);assert.equal(second.unfinishedCount,0);assert.equal(second.workCount,1);assert.equal(second.reportSaved,true);assert.equal(f.calls.length,1);
+});
+
 test('资料分段检查点跨日保留，次日接续未读尾部而不重发已处理片段',async t=>{
  const f=await fixture(t),p=f.projects[0];fs.writeFileSync(path.join(p.sourceDir,'长业务资料.md'),'业务规则。'.repeat(5000));await f.store.scanProject(p.id);
  await f.service.run(p.id,'2026-10-10');const first=new Set(f.calls[0].sources.map(source=>source.id));f.setTime('2026-10-11T03:00:00Z');await f.service.run(p.id,'2026-10-11');
