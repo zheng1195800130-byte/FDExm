@@ -196,11 +196,13 @@ async function run() {
     check((await request('model:settings')).provider === 'compatible', '选择原生模型同样不会自动保存');
     await page.locator('[data-action="test-model"]').click();
     await page.waitForFunction(() => /连接成功|连接正常/.test(document.querySelector('#model-key-status')?.textContent || ''));
+    check((await page.locator('#model-key-status').innerText()).includes('保存设置'),'测试成功明确提示仍需保存，不能误认为新密钥已经生效');
     const nativeChat = requests.at(-1), payload = JSON.parse(nativeChat.raw);
     check(nativeChat.method === 'POST' && nativeChat.path === '/native/v1/messages' && !nativeChat.authorization && nativeChat.nativeKey === FAKE_KEYS[2] && nativeChat.version === '2023-06-01' && payload.model === 'claude-mock' && typeof payload.system === 'string' && !payload.response_format, '所选 Anthropic 模型测试连接使用原生 messages 请求');
     await saveSettings();
     saved = await request('model:settings');
     check(saved.provider === 'anthropic' && saved.model === 'claude-mock' && saved.keyConfigured, '原生模型与协议保存成功');
+    check(Number.isFinite(Date.parse(saved.savedAt)),'保存成功返回可追溯的保存时间');
     check(noFakeSecret(JSON.stringify(await request('state'))) && noFakeSecret(await fs.readFile(path.join(dataDir, 'store.json'), 'utf8')), '原生密钥不会进入公开状态或项目存储');
     const mdFiles = [];
     async function collectMarkdown(dir) {

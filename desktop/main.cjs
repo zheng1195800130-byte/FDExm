@@ -292,7 +292,7 @@ async function dispatch(action, p, sender) {
       if (typeof apiKey !== 'string' || (summarizer.requiresApiKey(config) && !apiKey.trim()) || apiKey.length > 4000 || /[\r\n]/.test(apiKey)) throw new Error('请先填写有效的 API Key');
       if (action === 'model:list') return summarizer.listModels({ config, apiKey });
       await summarizer.testConnection({ config: { ...config, enabled: true }, apiKey });
-      return { ok: true, message: '连接成功，点击整理时使用' };
+      return { ok: true, message: '连接成功，请点击“保存设置”后再整理' };
     }
     case 'summary:run': {
       return dailyDesk.run(p.id,p.date || localDate(new Date()));

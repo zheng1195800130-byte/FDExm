@@ -124,3 +124,18 @@ test('主档案写入失败同时回滚内存中的接口选择及密钥，重�
  assert.equal(settings.config().baseUrl,config.baseUrl);assert.equal(settings.key(),secret.apiKey);
  assert.equal(new ModelSettings({dataDir,store:new Store(dataDir),safeStorage:adapter(dataDir)}).key(),secret.apiKey);
 });
+
+test('保存后回读新密钥和备份，保存时间随密文持久化但公开状态不泄露密钥',t=>{
+ const {dataDir,store}=fixture(t),settings=new ModelSettings({dataDir,store,safeStorage:adapter(dataDir)});
+ const saved=settings.save({config,apiKey:'mock-new-verified-key'});
+ assert.ok(Number.isFinite(Date.parse(saved.savedAt)));assert.equal(settings.key(),'mock-new-verified-key');assert.deepEqual(fs.readFileSync(settings.path),fs.readFileSync(settings.backupPath));
+ const restarted=new ModelSettings({dataDir,store:new Store(dataDir),safeStorage:adapter(dataDir)});
+ assert.equal(restarted.public().savedAt,saved.savedAt);assert.equal(restarted.key(),'mock-new-verified-key');assert.doesNotMatch(JSON.stringify(restarted.public()),/mock-new-verified-key/);
+});
+
+test('写入未生效时回读校验拒绝成功，不改变原密钥和接口配置',t=>{
+ const {dataDir,store}=fixture(t),settings=new ModelSettings({dataDir,store,safeStorage:adapter(dataDir)});settings.save({config,apiKey:secret.apiKey});const bytes=fs.readFileSync(settings.path),atomic=settings._atomicEncrypted.bind(settings);
+ settings._atomicEncrypted=(file,...args)=>{if(file===settings.path)return;return atomic(file,...args);};
+ assert.throws(()=>settings.save({config:{...config,model:'another-mock'},apiKey:'mock-unwritten-key'}),/回读不一致/);
+ assert.equal(settings.config().model,config.model);assert.equal(settings.key(),secret.apiKey);assert.deepEqual(fs.readFileSync(settings.path),bytes);assert.deepEqual(fs.readFileSync(settings.backupPath),bytes);
+});
