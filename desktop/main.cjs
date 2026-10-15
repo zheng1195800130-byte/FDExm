@@ -42,7 +42,9 @@ const exec = promisify(execFile);
 const memoWindows = new Map();
 const windows = () => [main, ball, panel, ...memoWindows.values()].filter(w => w && !w.isDestroyed());
 const broadcast = (extra = {}) => windows().forEach(w => w.webContents.send('fde:changed', extra));
-const commit = fn => { const task = queue.then(fn, fn); queue = task.catch(() => {}); return task; };
+const syncLocalState = () => { if (store?.refreshFromDisk()) broadcast({ localDataUpdated: true }); };
+const refreshWorkbench = () => { try { syncLocalState(); broadcast({ localDataUpdated: true }); } catch (error) { broadcast({ warning: error.message }); } };
+const commit = fn => { const execute = () => { syncLocalState(); return fn(); }; const task = queue.then(execute, execute); queue = task.catch(() => {}); return task; };
 function scanMaterials(id) {
   if (project(id).archivedAt) return Promise.reject(new Error('项目已归档，请先恢复项目'));
   if (materialScans.has(id)) return materialScans.get(id);
@@ -86,7 +88,8 @@ function protect(win) {
 }
 function saveBounds() {
   if (main && !main.isDestroyed() && !main.isMaximized() && !main.isMinimized()) {
-    store.setSettings({ mainBounds: main.getBounds() });
+    try { syncLocalState(); store.setSettings({ mainBounds: main.getBounds() }); }
+    catch (error) { broadcast({ warning: error.message }); }
   }
 }
 function createWindows() {
@@ -101,6 +104,7 @@ function createWindows() {
   main.loadFile(path.join(ROOT, 'src/ui/index.html'));
   main.once('ready-to-show', () => { if (process.env.FDE_TEST !== '1') main.show(); });
   main.on('close', event => { if (!quitting) { event.preventDefault(); compact(); } });
+  main.on('focus', refreshWorkbench);
   let boundsTimer;
   for (const event of ['resize', 'move']) main.on(event, () => { clearTimeout(boundsTimer); boundsTimer = setTimeout(saveBounds, 400); });
   const area = screen.getPrimaryDisplay().workArea;
@@ -139,7 +143,7 @@ function clampBall() {
   ball.setPosition(Math.max(a.x, Math.min(b.x, a.x + a.width - b.width)), Math.max(a.y, Math.min(b.y, a.y + a.height - b.height)));
 }
 function compact() { main.hide(); panel.hide(); clampBall(); ball.showInactive(); }
-function showWorkbench() { panel.hide(); ball.hide(); if (main.isMinimized()) main.restore(); main.show(); main.focus(); }
+function showWorkbench() { refreshWorkbench(); panel.hide(); ball.hide(); if (main.isMinimized()) main.restore(); main.show(); main.focus(); }
 function showPanel() {
   const b = ball.getBounds();
   const a = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).workArea;
@@ -406,7 +410,7 @@ function setupIPC() {
     if (!isTrustedRequest(event)) return { ok: false, error: '不允许的页面来源' };
     if (!input || typeof input.action !== 'string') return { ok: false, error: '无效请求' };
     try {
-      const execute = () => dispatch(input.action, input.payload || {}, event.sender);
+      const execute = () => { syncLocalState(); return dispatch(input.action, input.payload || {}, event.sender); };
       const direct = ['state', 'project:scan', 'model:settings', 'model:test', 'model:list', 'summary:run', 'requirement:analyze', 'summary:rules', 'link:open'].includes(input.action) || input.action.startsWith('daily:') || input.action.startsWith('window:') || input.action.startsWith('clipboard:');
       const promise = direct ? execute() : queue.then(execute, execute);
       if (!direct) queue = promise.catch(() => {});
@@ -436,10 +440,10 @@ else {
     // results without scanning materials or reading Codex conversation files.
     lastLocalDay = localDate(new Date());
     const archiveLocal = day => commit(()=>{for(const proj of store.getState().projects.filter(proj=>!proj.archivedAt))dailyDesk.rollover(proj.id,day);});
-    archiveLocal(lastLocalDay).catch(error=>broadcast({warning:error.message}));
+    archiveLocal(lastLocalDay).then(refreshWorkbench,error=>broadcast({warning:error.message}));
     const checkDay = () => { const day=localDate(new Date()); if(day!==lastLocalDay){lastLocalDay=day;archiveLocal(day).then(()=>broadcast({dayChanged:day}),error=>broadcast({warning:error.message}));} };
     dayTimer=setInterval(checkDay,1000);dayTimer.unref();
-    require('electron').powerMonitor.on('resume',checkDay);
+    require('electron').powerMonitor.on('resume',()=>{checkDay();refreshWorkbench();});
   }).catch(error => { dialog.showErrorBox('FDE Desk 启动失败', error.message); quitting = true; app.quit(); });
   app.on('activate', () => main && showWorkbench());
   app.on('before-quit', () => {
@@ -449,7 +453,8 @@ else {
     dailyDesk?.stop(); clearInterval(dayTimer);
     if (store) {
       saveBounds();
-      if (ball && !ball.isDestroyed()) store.setSettings({ ballPosition: { x: ball.getPosition()[0], y: ball.getPosition()[1] } });
+      try { syncLocalState(); if (ball && !ball.isDestroyed()) store.setSettings({ ballPosition: { x: ball.getPosition()[0], y: ball.getPosition()[1] } }); }
+      catch (error) { console.error(error.message); }
     }
     clearTimeout(ballSaveTimer); globalShortcut.unregisterAll();
   });

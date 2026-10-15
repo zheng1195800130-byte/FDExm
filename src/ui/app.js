@@ -11,6 +11,7 @@ let codexContext='',originalRequestToken=0;
 const materialScans=new Map();
 const materialFolders=new Map();let fileTag='';
 let deferredMaterialView=false;
+let refreshSequence=0;
 const $=id=>document.getElementById(id);
 const project=()=>currentProject(state);
 const cycleName=p=>(p.cycles||[]).find(c=>c.id===p.activeCycleId)?.name || '首次交付';
@@ -55,8 +56,12 @@ function syncCodexDate(p){
 }
 function selectCodexDate(date){if(!validDate(date))return;codexDateSelections.set(codexContext,date);if(date!==codexDate){codexDate=date;resetOriginalConversation();}}
 async function refresh(renderView=true){
+  const sequence=++refreshSequence;
   const focusId=document.activeElement?.id, selectionStart=document.activeElement?.selectionStart, selectionEnd=document.activeElement?.selectionEnd, scrollY=window.scrollY;
-  const priorProjectId=project()?.id;state=await request('state');
+  const priorProjectId=project()?.id;let next;
+  try{next=await request('state');}catch(error){if(sequence!==refreshSequence)return;throw error;}
+  if(sequence!==refreshSequence)return;
+  state=next;
   const p=project();if(priorProjectId&&p?.id!==priorProjectId){fileQuery='';fileKind='';fileDate='';fileGroup='';fileTag='';}
   syncCodexDate(p);
   $('project-select').innerHTML=state.projects.length ? state.projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join(''):'<option value="">'+(state.archivedProjects?.length?'暂无关注项目':'尚未关联项目')+'</option>';
@@ -65,6 +70,10 @@ async function refresh(renderView=true){
   renderNavigation();
   if(renderView){deferredMaterialView=false;render();const focused=focusId&&$(focusId);if(focused){focused.focus({preventScroll:true});if(typeof selectionStart==='number'&&typeof focused.setSelectionRange==='function'&&!['date','number','checkbox','radio'].includes(focused.type))focused.setSelectionRange(selectionStart,selectionEnd);}window.scrollTo({top:scrollY});}
   else if(['files','overview'].includes(route))deferredMaterialView=true;
+}
+async function refreshHistoryView(focusId=''){
+  try{await refresh();if(focusId)$(focusId)?.focus({preventScroll:true});}
+  catch(error){notify(error.message||String(error),true);}
 }
 function renderNavigation(){
   const p=project();
@@ -174,7 +183,7 @@ function renderRequirements(p){
   `<section id="requirement-questions" class="panel requirement-questions" aria-labelledby="requirement-questions-title"><div class="panel-head"><h2 id="requirement-questions-title">待确认问题 <span>${questions.length+active.length}</span></h2></div><div class="panel-body requirement-scroll" role="region" aria-label="待确认问题列表" tabindex="0">${active.map(item=>confirmationMarkup(p,item)).join('')}${questions.map(({text,item})=>`<div class="requirement-question" data-requirement="${esc(item.id)}"><div><p>${esc(text)}</p><span>对应需求：${esc(item.title)}</span>${requirementTimeMarkup(item)}</div><button class="link-btn" data-action="edit-requirement" data-item="${esc(item.id)}" aria-label="编辑 ${esc(item.title)} 的待确认问题">编辑</button></div>`).join('')}${!active.length&&!questions.length?`<div class="empty-inline">${view.filtered?'当日暂无待确认问题。':(p.requirements||[]).length?'暂无已整理出的待确认问题。':'业务需求与暂缓事项整理后，会集中显示在这里。'}</div>`:''}${resolved.length?`<details id="requirement-resolved" class="requirement-resolved"><summary>已解决事项 (${resolved.length})</summary>${resolved.map(item=>confirmationMarkup(p,item,true)).join('')}</details>`:''}</div></section>`;
 }
 async function saveRequirementFilter(value,mode=value?'date':'all'){
-  const p=project();if(!p)return;const after=requirementAfterISO(value),previous=requirementDate(p);if(after===(p.requirementsAfter||'')&&mode===p.requirementsDateMode)return;
+  const p=project();if(!p)return;const after=requirementAfterISO(value),previous=requirementDate(p);if(after===(p.requirementsAfter||'')&&mode===p.requirementsDateMode){await refresh();return;}
   const input=$('requirement-after');if(input)input.disabled=true;
   try{await request('requirement:filter',{id:p.id,after,mode});await refresh();}
   catch(error){if(project()?.id===p.id&&input?.isConnected)input.value=previous;throw error;}
@@ -497,17 +506,17 @@ async function handleAction(action,target){
     case 'new-record':recordForm();break;
     case 'edit-record':recordForm(p.records.find(r=>r.id===target.dataset.item));break;
     case 'delete-record':await request('record:remove',{id,recordId:$('modal-form').dataset.item});closeForm();await refresh();notify('工作记录已删除');break;
-    case 'clear-record-date':recordDate='';render();break;
+    case 'clear-record-date':recordDate='';await refresh();break;
     case 'new-cycle':showForm('新建交付周期','当前周期结束后，新的明确交付目标进入下一周期。',field('name','周期名称','',{required:true,placeholder:'例如：第二阶段 / 报表功能交付'}),async values=>{await request('cycle:start',{id,name:values.name});await refresh();notify('新周期已建立');});break;
     case 'new-delivery':deliveryForm();break;
     case 'save-report':{const date=reportDate,key=reportKey(p,date),text=currentReportText(p,date);await request('report:save',{id,date,text});reportDrafts.delete(key);reportGenerated.delete(key);await refresh();notify('日报已保存');break;}
     case 'copy-report':{const text=currentReportText(p);if(!text.trim())throw new Error('日报内容为空，请先生成或填写。');await request('clipboard:text',{text});notify('日报已复制');break;}
     case 'export-report':{const date=reportDate,text=currentReportText(p,date);if(!text.trim())throw new Error('日报内容为空，请先生成或填写。');const output=await request('report:export',{id,date,text});if(output)notify('日报已导出');break;}
     case 'edit-report':case 'preview-report':{const key=reportKey(p),text=currentReportText(p);if(text!==reportText(p))reportDrafts.set(key,text);reportModes.set(key,action==='edit-report'?'edit':'preview');renderReports(p);(action==='edit-report'?$('report-text'):$('report-preview-mode'))?.focus({preventScroll:true});break;}
-    case 'show-day-records':recordDate=reportDate;route='records';renderNavigation();render();break;
-    case 'open-report':reportDate=target.dataset.date;render();break;
+    case 'show-day-records':recordDate=reportDate;route='records';await refresh();break;
+    case 'open-report':reportDate=target.dataset.date;await refresh();break;
     case 'bind-codex':await bindCodex();break;
-    case 'show-codex-date':selectCodexDate(target.dataset.date);render();break;
+    case 'show-codex-date':selectCodexDate(target.dataset.date);await refresh();break;
     case 'daily-current':await organizeDaily(false,today());break;
     case 'daily-all':await organizeDaily(true,today());break;
     case 'daily-report-all':{const date=route==='reports'?reportDate:today(),drafts=state.projects.filter(proj=>reportDrafts.has(reportKey(proj,date))||(reportGenerated.get(reportKey(proj,date))?.explicit&&reportGenerated.get(reportKey(proj,date))?.signature===reportSignature(proj,date))).map(proj=>({id:proj.id,text:currentReportText(proj,date)})),value=await request('daily:report-all',{date,drafts});showForm('全部项目日报',value.date,`${value.pendingProjects?.length?`<div class="notice warning">${esc(value.pendingProjects.join('、'))} 还有未整理内容，当前显示已保存成果。</div>`:''}<div class="markdown-body">${renderMarkdown(value.text)}</div>`,async()=>{await request('clipboard:text',{text:value.text});notify('已复制全部项目日报');},{submitLabel:'复制日报'});break;}
@@ -533,7 +542,7 @@ async function handleAction(action,target){
 
 document.addEventListener('click',async event=>{
   const markdownLink=event.target.closest('.markdown-body a');if(markdownLink){event.preventDefault();const url=markdownLink.getAttribute('href');if(url){try{await request('link:open',{url});}catch(error){notify(error.message||String(error),true);}}return;}
-  const nav=event.target.closest('[data-route]');if(nav){event.preventDefault();route=nav.dataset.route;renderNavigation();render();return;}
+  const nav=event.target.closest('[data-route]');if(nav){event.preventDefault();route=nav.dataset.route;renderNavigation();await refreshHistoryView();return;}
   const target=event.target.closest('[data-action]');if(!target||target.disabled)return;event.preventDefault();
   const action=target.dataset.action;target.disabled=true;try{await handleAction(action,target);}catch(error){notify(error.message||String(error),true);}finally{if(target.isConnected)target.disabled=false;}
 });
@@ -557,12 +566,12 @@ document.addEventListener('change',async event=>{
   if(el.id==='file-kind'){fileKind=el.value;renderFileRows();}
   if(el.id==='file-date'){fileDate=el.value;renderFileRows();}
   if(el.id==='requirement-after'){try{await saveRequirementFilter(el.value);}catch(error){notify(error.message||String(error),true);}}
-  if(el.id==='record-history'){if(el.value){recordDate=el.value;render();}return;}
-  if(el.id==='report-history'){if(el.value){reportDate=el.value;render();}return;}
+  if(el.id==='record-history'){if(el.value){recordDate=el.value;await refreshHistoryView();}return;}
+  if(el.id==='report-history'){if(el.value){reportDate=el.value;await refreshHistoryView();}return;}
   if(el.id==='requirement-history'){if(el.value){try{await saveRequirementFilter(el.value);}catch(error){notify(error.message||String(error),true);}}return;}
-  if(el.id==='record-date'){recordDate=el.value;render();}
-  if(el.id==='report-date'){reportDate=el.value||today();render();$('report-date')?.focus({preventScroll:true});}
-  if(el.id==='codex-date'||el.id==='codex-history'){if(!el.value)return;selectCodexDate(el.value);render();$('codex-date')?.focus({preventScroll:true});}
+  if(el.id==='record-date'){recordDate=el.value;await refreshHistoryView('record-date');}
+  if(el.id==='report-date'){reportDate=el.value||today();await refreshHistoryView('report-date');}
+  if(el.id==='codex-date'||el.id==='codex-history'){if(!el.value)return;selectCodexDate(el.value);await refreshHistoryView('codex-date');}
 });
 $('add-project').addEventListener('click',()=>projectForm());
 $('compact-button').addEventListener('click',async()=>{try{await request('window:compact');}catch(e){notify(e.message,true);}});
@@ -579,7 +588,7 @@ document.addEventListener('dragenter',event=>{if(!event.dataTransfer?.types.incl
 document.addEventListener('dragleave',()=>{dragDepth=Math.max(0,dragDepth-1);if(!dragDepth)$('drag-overlay')?.remove();});
 document.addEventListener('drop',async event=>{event.preventDefault();dragDepth=0;$('drag-overlay')?.remove();if(!project()||!event.dataTransfer?.files.length)return;try{const paths=[...event.dataTransfer.files].map(file=>window.fde.getPathForFile(file)).filter(Boolean);if(!paths.length)throw new Error('无法取得文件路径，请使用“导入补充资料”。');await request('file:add',{id:project().id,paths,kind:'补充资料'});await refresh();notify('拖入的资料已收录');}catch(error){notify(error.message,true);}});
 let changeTimer;
-window.fde?.onChange(event=>{if(event?.dayChanged){updateTodayLabel();const previous=uiDay;uiDay=event.dayChanged;if(reportDate===previous)reportDate=uiDay;if(codexDate===previous){codexDate=uiDay;codexDateSelections.delete(codexContext);}if(recordDate===previous)recordDate=uiDay;}if(event?.codexUpdated===project()?.id)codexUpdated=true;clearTimeout(changeTimer);changeTimer=setTimeout(async()=>{try{await refresh(!$('form-dialog').open&&!$('preview-dialog').open);}catch(error){notify(error.message,true);}},150);});
+window.fde?.onChange(event=>{if(event?.warning)notify(event.warning,true);if(event?.dayChanged){updateTodayLabel();const previous=uiDay;uiDay=event.dayChanged;if(reportDate===previous)reportDate=uiDay;if(codexDate===previous){codexDate=uiDay;codexDateSelections.delete(codexContext);}if(recordDate===previous)recordDate=uiDay;}if(event?.codexUpdated===project()?.id)codexUpdated=true;clearTimeout(changeTimer);changeTimer=setTimeout(async()=>{try{await refresh(!$('form-dialog').open&&!$('preview-dialog').open);}catch(error){notify(error.message,true);}},150);});
 try{await refresh();}catch(error){$('workspace').innerHTML=empty('工作台暂时无法打开',error.message,actionButton('reload','重试','refresh'));document.addEventListener('click',event=>{if(event.target.closest('[data-action=reload]'))location.reload();});}
 
 

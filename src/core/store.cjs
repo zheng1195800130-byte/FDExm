@@ -230,11 +230,19 @@ class Store {
     this.recoveryWarning = '';
     this.projectLocks = new Map();
     this.state = this._load();
+    // Keep the fingerprint of the exact archive loaded by this process.
+    this.diskHash ??= this._diskHash();
     if (!fs.existsSync(this.statePath) || this.recoveryWarning) this._persist();
   }
 
-  _readState(filePath) {
-    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  _readState(filePath, track = false) {
+    const text = fs.readFileSync(filePath, 'utf8');
+    if (track) this.diskHash = this._hash(text);
+    return this._parseState(text);
+  }
+
+  _parseState(text) {
+    const data = JSON.parse(text);
     if (data.version !== 1 || !Array.isArray(data.projects) || !data.settings || typeof data.settings !== 'object') throw new Error('档案结构无效');
     for (const project of data.projects) {
       if (!safeId(project.id) || !Array.isArray(project.files) || !Array.isArray(project.records) || !Array.isArray(project.requirements) || !Array.isArray(project.reports) || !Array.isArray(project.cycles) || !Array.isArray(project.deliveries)) throw new Error('项目档案结构无效');
@@ -255,19 +263,41 @@ class Store {
 
   _load() {
     if (!fs.existsSync(this.statePath)) {
+      this.diskHash = null;
       if (fs.existsSync(this.backupPath)) {
         try { const backup = this._readState(this.backupPath); this.recoveryWarning = '主档案缺失，已从备份恢复。'; return backup; }
         catch (error) { throw new Error(`主档案缺失且备份损坏，请保留管理目录后恢复备份。原因：${error.message}`); }
       }
       return { version: 1, settings: { summarizer: { ...SUMMARIZER_DEFAULTS } }, projects: [] };
     }
-    try { return this._readState(this.statePath); } catch (error) {
+    try { return this._readState(this.statePath, true); } catch (error) {
       try {
         const backup = this._readState(this.backupPath);
         fs.copyFileSync(this.statePath, path.join(this.dataDir, `store.corrupt-${Date.now()}.json`));
         this.recoveryWarning = '主档案损坏，已从上一次有效备份恢复；损坏文件已保留。';
         return backup;
       } catch { throw new Error(`项目档案及备份无法读取，请保留管理目录后恢复备份。原因：${error.message}`); }
+    }
+  }
+
+  _hash(text) { return crypto.createHash('sha256').update(text).digest('hex'); }
+  _diskHash() {
+    try { return this._hash(fs.readFileSync(this.statePath, 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  }
+
+  refreshFromDisk() {
+    try {
+      const text = fs.readFileSync(this.statePath, 'utf8'), hash = this._hash(text);
+      if (hash === this.diskHash) return false;
+      const next = this._parseState(text);
+      this.state = next;
+      this.diskHash = hash;
+      this.recoveryWarning = '';
+      return true;
+    } catch (error) {
+      // A runtime refresh must not silently substitute an older backup.
+      throw new Error(`本地档案更新后无法读取，请检查本地数据；原档案和备份未改动。原因：${error.message}`);
     }
   }
 
@@ -289,11 +319,17 @@ class Store {
   }
 
   _persist() {
+    if (this._diskHash() !== this.diskHash) {
+      this.refreshFromDisk();
+      throw new Error('本地档案已由其他操作更新，已重新读取最新内容，请重试本次保存。');
+    }
     // Back up only valid JSON. A damaged primary must never replace a valid backup.
     if (fs.existsSync(this.statePath)) {
       try { this._readState(this.statePath); this._atomicWrite(this.backupPath, fs.readFileSync(this.statePath, 'utf8')); } catch { /* Keep the previous valid backup. */ }
     }
-    this._atomicWrite(this.statePath, JSON.stringify(this.state, null, 2));
+    const text = JSON.stringify(this.state, null, 2);
+    this._atomicWrite(this.statePath, text);
+    this.diskHash = this._hash(text);
     if (!fs.existsSync(this.backupPath)) this._atomicWrite(this.backupPath, JSON.stringify(this.state, null, 2));
   }
 
@@ -338,6 +374,7 @@ class Store {
   }
 
   _commit(project) {
+    if (this._project(project.id) !== project) throw new Error('本地档案已更新，请重新执行本次操作。');
     project.updatedAt = now();
     this._persist();
     try { this._archive(project); project.archiveWarning = ''; } catch (error) { project.archiveWarning = `档案文件写入失败：${error.message}`; this._persist(); }
@@ -377,9 +414,9 @@ class Store {
   }
 
   saveSummarizerSettings(config) {
-    const previous=clone(this.state.settings);
+    const previousState=this.state,previous=clone(this.state.settings);
     try{return this.setSettings({summarizer:config});}
-    catch(error){this.state.settings=previous;throw error;}
+    catch(error){if(this.state===previousState)this.state.settings=previous;throw error;}
   }
 
   projectFolder(projectId) { return this._projectDir(projectId); }
