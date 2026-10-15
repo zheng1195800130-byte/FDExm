@@ -588,7 +588,13 @@ document.addEventListener('dragenter',event=>{if(!event.dataTransfer?.types.incl
 document.addEventListener('dragleave',()=>{dragDepth=Math.max(0,dragDepth-1);if(!dragDepth)$('drag-overlay')?.remove();});
 document.addEventListener('drop',async event=>{event.preventDefault();dragDepth=0;$('drag-overlay')?.remove();if(!project()||!event.dataTransfer?.files.length)return;try{const paths=[...event.dataTransfer.files].map(file=>window.fde.getPathForFile(file)).filter(Boolean);if(!paths.length)throw new Error('无法取得文件路径，请使用“导入补充资料”。');await request('file:add',{id:project().id,paths,kind:'补充资料'});await refresh();notify('拖入的资料已收录');}catch(error){notify(error.message,true);}});
 let changeTimer;
-window.fde?.onChange(event=>{if(event?.warning)notify(event.warning,true);if(event?.dayChanged){updateTodayLabel();const previous=uiDay;uiDay=event.dayChanged;if(reportDate===previous)reportDate=uiDay;if(codexDate===previous){codexDate=uiDay;codexDateSelections.delete(codexContext);}if(recordDate===previous)recordDate=uiDay;}if(event?.codexUpdated===project()?.id)codexUpdated=true;clearTimeout(changeTimer);changeTimer=setTimeout(async()=>{try{await refresh(!$('form-dialog').open&&!$('preview-dialog').open);}catch(error){notify(error.message,true);}},150);});
+window.addEventListener('fde-access-restored',()=>void refreshHistoryView());
+function clearPrivateView(){
+  state={projects:[],settings:{}};reportDrafts.clear();reportGenerated.clear();reportModes.clear();resetOriginalConversation();
+  $('workspace').replaceChildren();$('project-select').replaceChildren();$('breadcrumb-project').textContent='个人档案已锁定';
+  for(const id of ['form-dialog','preview-dialog']){$(id)?.close();$(id)?.firstElementChild?.replaceChildren();}
+}
+window.fde?.onChange(event=>{if(event?.accessDenied){clearTimeout(changeTimer);refreshSequence++;clearPrivateView();return;}if(event?.warning)notify(event.warning,true);if(event?.dayChanged){updateTodayLabel();const previous=uiDay;uiDay=event.dayChanged;if(reportDate===previous)reportDate=uiDay;if(codexDate===previous){codexDate=uiDay;codexDateSelections.delete(codexContext);}if(recordDate===previous)recordDate=uiDay;}if(event?.codexUpdated===project()?.id)codexUpdated=true;clearTimeout(changeTimer);changeTimer=setTimeout(async()=>{try{await refresh(!$('form-dialog').open&&!$('preview-dialog').open);}catch(error){notify(error.message,true);}},150);});
 try{await refresh();}catch(error){$('workspace').innerHTML=empty('工作台暂时无法打开',error.message,actionButton('reload','重试','refresh'));document.addEventListener('click',event=>{if(event.target.closest('[data-action=reload]'))location.reload();});}
 
 

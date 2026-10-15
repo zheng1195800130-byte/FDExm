@@ -25,12 +25,15 @@ const { createProjectThreadActions } = require('./project-thread-actions.cjs');
 const { RequirementService } = require('../src/core/requirement-service.cjs');
 const { DailyDesk, localDate, carryover } = require('../src/core/daily-desk.cjs');
 const requirementSummarizer = require('../src/core/requirement-summarizer.cjs');
+const {EasyClawAccess,startLocalBridge}=require('./easyclaw-access.cjs');
+const EASYCLAW=process.argv.includes('--easyclaw-host')||(app.isPackaged&&fs.existsSync(path.join(process.resourcesPath,'fde-easyclaw.json')));
 const ROOT = path.resolve(__dirname, '..');
 const TRUSTED_PAGES = new Map(['index.html', 'float.html', 'ball.html', 'memo.html'].map(name => [name, pathToFileURL(path.join(ROOT, 'src/ui', name)).href]));
 const DATA = prepareDataDirectory({ root: ROOT, isPackaged: app.isPackaged, execPath: process.execPath });
 fs.mkdirSync(path.join(DATA, 'runtime'), { recursive: true });
-app.setPath('userData', path.join(DATA, 'runtime'));
-app.setPath('sessionData', path.join(DATA, 'runtime', 'browser'));
+const RUNTIME=path.join(DATA,EASYCLAW?'runtime-easyclaw':'runtime');
+app.setPath('userData', RUNTIME);
+app.setPath('sessionData', path.join(RUNTIME, 'browser'));
 app.setAppUserModelId('local.fde.desk');
 app.setName('FDE Desk');
 let store, main, ball, panel, tray, modelSettings, summaryRules, summaryService, requirementService, memoActions, quitting = false;
@@ -38,10 +41,12 @@ let queue = Promise.resolve();
 const materialScans = new Map();
 let ballSaveTimer;
 let dailyDesk, dayTimer, lastLocalDay;
+let easyclawAccess,bridgeServer,leaseTimer,nativeUnlocked=false,bridgeRevision=0;
+const accessAllowed=()=>!EASYCLAW||easyclawAccess?.allowed();
 const exec = promisify(execFile);
 const memoWindows = new Map();
 const windows = () => [main, ball, panel, ...memoWindows.values()].filter(w => w && !w.isDestroyed());
-const broadcast = (extra = {}) => windows().forEach(w => w.webContents.send('fde:changed', extra));
+const broadcast = (extra = {}) => {bridgeRevision++;windows().forEach(w => w.webContents.send('fde:changed', extra));};
 const syncLocalState = () => { if (store?.refreshFromDisk()) broadcast({ localDataUpdated: true }); };
 const refreshWorkbench = () => { try { syncLocalState(); broadcast({ localDataUpdated: true }); } catch (error) { broadcast({ warning: error.message }); } };
 const commit = fn => { const execute = () => { syncLocalState(); return fn(); }; const task = queue.then(execute, execute); queue = task.catch(() => {}); return task; };
@@ -102,7 +107,7 @@ function createWindows() {
   main = new BrowserWindow(options({ ...bounds, minWidth: 980, minHeight: 660, title: 'FDE Desk · 个人工作台' }));
   protect(main);
   main.loadFile(path.join(ROOT, 'src/ui/index.html'));
-  main.once('ready-to-show', () => { if (process.env.FDE_TEST !== '1') main.show(); });
+  main.once('ready-to-show', () => { if (process.env.FDE_TEST !== '1'&&!EASYCLAW) main.show(); });
   main.on('close', event => { if (!quitting) { event.preventDefault(); compact(); } });
   main.on('focus', refreshWorkbench);
   let boundsTimer;
@@ -142,9 +147,10 @@ function clampBall() {
   const a = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).workArea;
   ball.setPosition(Math.max(a.x, Math.min(b.x, a.x + a.width - b.width)), Math.max(a.y, Math.min(b.y, a.y + a.height - b.height)));
 }
-function compact() { main.hide(); panel.hide(); clampBall(); ball.showInactive(); }
-function showWorkbench() { refreshWorkbench(); panel.hide(); ball.hide(); if (main.isMinimized()) main.restore(); main.show(); main.focus(); }
+function compact() { if(!accessAllowed())return;main.hide(); panel.hide(); clampBall(); ball.showInactive(); }
+function showWorkbench() { if(!accessAllowed())return;refreshWorkbench(); panel.hide(); ball.hide(); if (main.isMinimized()) main.restore(); main.show(); main.focus(); }
 function showPanel() {
+  if(!accessAllowed())return;
   const b = ball.getBounds();
   const a = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).workArea;
   const p = panel.getBounds();
@@ -405,18 +411,24 @@ function isTrustedRequest(event) {
     return TRUSTED_PAGES.get(page) === url.href;
   } catch { return false; }
 }
+async function executeRequest(input,sender){
+  if(!accessAllowed())throw new Error('请先在 EasyClaw 中验证授权账号。');
+  const execute = () => { if(!accessAllowed())throw new Error('请先在 EasyClaw 中验证授权账号。');syncLocalState(); return dispatch(input.action, input.payload || {}, sender); };
+  const direct = ['state', 'project:scan', 'model:settings', 'model:test', 'model:list', 'summary:run', 'requirement:analyze', 'summary:rules', 'link:open'].includes(input.action) || input.action.startsWith('daily:') || input.action.startsWith('window:') || input.action.startsWith('clipboard:');
+  const promise = direct ? execute() : queue.then(execute, execute);
+  if (!direct) queue = promise.catch(() => {});
+  const value = await promise;
+  if(!accessAllowed())throw new Error('账号验证已失效，请重新验证。');
+  if (/^(project:|file:(add|paste|update)|requirement:|record:|report:save|cycle:|delivery:|codex:bind|model:save|summary:rules-save)/.test(input.action)) broadcast();
+  if (/^memo:(save|paste|add-image|add-images|remove-image)$/.test(input.action)) broadcast({ memoUpdated: input.payload?.id });
+  return value;
+}
 function setupIPC() {
   ipcMain.handle('fde:request', async (event, input) => {
     if (!isTrustedRequest(event)) return { ok: false, error: '不允许的页面来源' };
     if (!input || typeof input.action !== 'string') return { ok: false, error: '无效请求' };
     try {
-      const execute = () => { syncLocalState(); return dispatch(input.action, input.payload || {}, event.sender); };
-      const direct = ['state', 'project:scan', 'model:settings', 'model:test', 'model:list', 'summary:run', 'requirement:analyze', 'summary:rules', 'link:open'].includes(input.action) || input.action.startsWith('daily:') || input.action.startsWith('window:') || input.action.startsWith('clipboard:');
-      const promise = direct ? execute() : queue.then(execute, execute);
-      if (!direct) queue = promise.catch(() => {});
-      const value = await promise;
-      if (/^(project:|file:(add|paste|update)|requirement:|record:|report:save|cycle:|delivery:|codex:bind|model:save|summary:rules-save)/.test(input.action)) broadcast();
-      if (/^memo:(save|paste|add-image|add-images|remove-image)$/.test(input.action)) broadcast({ memoUpdated: input.payload?.id });
+      const value = await executeRequest(input,event.sender);
       return { ok: true, value };
     } catch (error) { return { ok: false, error: error.message || '操作失败' }; }
   });
@@ -424,7 +436,8 @@ function setupIPC() {
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => main && showWorkbench());
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
+    if(EASYCLAW)easyclawAccess=new EasyClawAccess({dataDir:DATA,onRevoke:()=>{nativeUnlocked=false;for(const win of windows()){win.hide();win.webContents.reload();}}});
     store = new Store(DATA);
     memoActions = createMemoActions({ memos: new MemoStore({ projectFolder: managedPath }), clipboard, ClipboardItem, nativeImage, dialog, shell, windowForSender: sender => BrowserWindow.fromWebContents(sender) });
     modelSettings = new ModelSettings({ dataDir: DATA, store, safeStorage: createModelSecretStorage({ dataDir: DATA, safeStorage }) });
@@ -444,6 +457,14 @@ else {
     const checkDay = () => { const day=localDate(new Date()); if(day!==lastLocalDay){lastLocalDay=day;archiveLocal(day).then(()=>broadcast({dayChanged:day}),error=>broadcast({warning:error.message}));} };
     dayTimer=setInterval(checkDay,1000);dayTimer.unref();
     require('electron').powerMonitor.on('resume',()=>{checkDay();refreshWorkbench();});
+    if(EASYCLAW){
+      bridgeServer=await startLocalBridge({access:easyclawAccess,version:app.getVersion(),port:process.env.FDE_TEST==='1'&&process.env.FDE_EASYCLAW_PORT!==undefined?Number(process.env.FDE_EASYCLAW_PORT):35639,events:()=>({revision:bridgeRevision,day:lastLocalDay}),onAuthorized:()=>{if(!nativeUnlocked){nativeUnlocked=true;broadcast({accessRestored:true});}},dispatch:(action,payload)=>{
+        if(action==='window:compact'){showPanel();return true;}
+        return executeRequest({action,payload},main.webContents);
+      }});
+      if(process.env.FDE_TEST==='1')globalThis.__fdeEasyClawTest={port:bridgeServer.address().port};
+      leaseTimer=setInterval(()=>{if(!easyclawAccess.allowed())easyclawAccess.revoke();},1000);leaseTimer.unref();
+    }
   }).catch(error => { dialog.showErrorBox('FDE Desk 启动失败', error.message); quitting = true; app.quit(); });
   app.on('activate', () => main && showWorkbench());
   app.on('before-quit', () => {
@@ -451,6 +472,7 @@ else {
     summaryService?.stop();
     requirementService?.stop();
     dailyDesk?.stop(); clearInterval(dayTimer);
+    clearInterval(leaseTimer);bridgeServer?.close();
     if (store) {
       saveBounds();
       try { syncLocalState(); if (ball && !ball.isDestroyed()) store.setSettings({ ballPosition: { x: ball.getPosition()[0], y: ball.getPosition()[1] } }); }

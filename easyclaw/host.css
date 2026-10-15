@@ -1,0 +1,7 @@
+.easyclaw-gate{min-height:100vh;display:grid;place-items:center;padding:24px;background:var(--bg,#f4f6f2)}
+.easyclaw-gate[hidden],.app-shell[hidden]{display:none}
+.access-panel{width:min(100%,460px);padding:36px;border:1px solid var(--border,#dbe4de);border-radius:14px;background:#fff}
+.access-panel h1{margin:0 0 18px;font-size:28px;color:#12313c}
+.access-panel p{line-height:1.7;color:#586d73;overflow-wrap:anywhere}
+.access-panel button{margin-top:14px;min-height:44px}
+@media(max-width:640px){.app-shell{flex-direction:column}.sidebar{position:static;width:auto;height:auto;min-height:auto}.sidebar-bottom{position:static}.main-area{margin-left:0;width:100%}.topbar{flex-wrap:wrap;gap:12px}.workspace{padding:20px}.report-grid{grid-template-columns:1fr}}
