@@ -307,7 +307,7 @@ async function dispatch(action, p, sender) {
     case 'summary:run': {
       return dailyDesk.run(p.id,p.date || localDate(new Date()));
     }
-    case 'daily:run': return dailyDesk.run(p.id,p.date || localDate(new Date()));
+    case 'daily:run': return dailyDesk.run(p.id,p.date || localDate(new Date()),p.mode||'append');
     case 'daily:all': return dailyDesk.runAll(p.date || localDate(new Date()));
     case 'daily:raw': return dailyDesk.raw(p.id,p.date || localDate(new Date()));
     case 'daily:report-all': return store.combinedReport(p.date || localDate(new Date()),p.drafts || []);

@@ -24,7 +24,7 @@ unzip.extractElectronZip = async (archive, target) => {
     electronVersion: require('electron/package.json').version,
     electronZipDir: path.resolve(__dirname, '../.electron-cache/official'),
     icon: path.resolve(__dirname, '../assets/icon.ico'),
-    ignore: [/^\/data($|\/)/, /^\/test-output($|\/)/, /^\/release($|\/)/, /^\/\.(?:git|githooks|fde-build|npm-cache|electron-cache|pack-tmp|test-tmp|tmp)($|\/)/, /^\/tests($|\/)/, /^\/scripts($|\/)/],
+    ignore: [/^\/data($|\/)/, /^\/backups($|\/)/, /^\/\.publish-audit\.local\.json$/, /^\/\.env(?:\.|$)/, /^\/test-output($|\/)/, /^\/release($|\/)/, /^\/\.(?:git|githooks|fde-build|npm-cache|electron-cache|pack-tmp|test-tmp|tmp)($|\/)/, /^\/tests($|\/)/, /^\/scripts($|\/)/],
     prune: true, executableName: 'FDE Desk', appBundleId: 'local.fde.desk',
     win32metadata: { CompanyName: 'FDE Desk', FileDescription: '个人 FDE 工作台', ProductName: 'FDE Desk' }
   });

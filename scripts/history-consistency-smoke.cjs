@@ -77,7 +77,7 @@ async function run(){
       });
     },snapshot);
     await page.locator('[data-route="records"]').click();await until(()=>app.evaluate(()=>__historyMock.pending.length===1),'未捕获旧响应');
-    await app.evaluate(()=>{const p=__historyMock.current.projects[0];p.records.push({...p.records.at(-1),id:'newest-response',title:'更新的响应不得被覆盖',date:'2026-10-14'});});
+    await app.evaluate(()=>{const p=__historyMock.current.projects[0],row={...p.records.at(-1),id:'newest-response',title:'更新的响应不得被覆盖',date:'2026-10-14'};p.records.push(row);p.dailyHistory['2026-10-14'].at(-1).records.push(structuredClone(row));});
     await page.locator('[data-route="records"]').click();await until(async()=>await page.locator('.record-card').count()===4,'新响应未展示');
     await app.evaluate(()=>__historyMock.pending.shift()());await pause(350);
     check(await page.locator('.record-card').count()===4&&(await page.locator('#record-date').inputValue())===DATE,'迟到的旧响应不能覆盖新数据或已选历史日期');

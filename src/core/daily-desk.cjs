@@ -160,23 +160,25 @@ class DailyDesk {
     }
   }
   async allCapture() { for (const p of this.store.getState().projects.filter(p=>!p.archivedAt)) await this.capture(p.id).catch(error=>this.notify({warning:`${p.name}：${error.message}`})); }
-  run(id,date=localDate(this.now())) {
+  run(id,date=localDate(this.now()),mode='append') {
     if (!validDate(date)) return Promise.reject(new Error('日期无效'));
+    if(!['append','replace'].includes(mode))return Promise.reject(new Error('整理方式无效'));
     if (this.runs.has(id)) return this.runs.get(id);
     const revision=this.project(id)?.archiveRevision||0;
-    const promise=(async()=>{await this.prepare(id);if(this.stopped||!this.isCurrent(id,revision))throw new Error('项目不存在、已归档或状态已改变');return this.organize(id,date);})().catch(async error=>{
+    const promise=(async()=>{await this.prepare(id);if(this.stopped||!this.isCurrent(id,revision))throw new Error('项目不存在、已归档或状态已改变');return this.organize(id,date,mode);})().catch(async error=>{
       if(!this.stopped&&this.isCurrent(id,revision))await this.commit(()=>{this.store.saveDailyDesk(id,date,{status:'error',message:clean(error.message,240)});this.notify({dailyUpdated:id});});
       throw error;
     }).finally(()=>this.runs.delete(id)); this.runs.set(id,promise); return promise;
   }
-  async organize(id,date) {
+  async organize(id,date,mode='append') {
     await this.capture(id,{date,materialHistory:false});
     let p=this.project(id); if (!p) throw new Error('项目不存在或已归档，请先恢复项目');
     const archiveRevision=p.archiveRevision||0;
     const {config,apiKey}=this.getModel();
     if (!config.enabled || (requiresApiKey(config) && !apiKey)) throw new Error('请先配置并启用整理模型');
-    const threadId=p.codex?.threadId || '',raw=this.raw(id,date),day=p.dailyDesk?.days?.[date] || {},processed=day.evidenceVersion===3?day.processed || {}:{},fileCheckpoints=p.dailyDesk?.fileCheckpoints || {};
-    const sources=[],pending=[],nextProcessed={...processed},nextFiles={...fileCheckpoints},nextParts={...(day.evidenceVersion===3?day.sourceCheckpoints || {}:{})},questionBatch=new Set(); let budget=18000,shortened=false;
+    const replacing=mode==='replace';
+    const threadId=p.codex?.threadId || '',raw=this.raw(id,date),day=p.dailyDesk?.days?.[date] || {},processed=!replacing&&day.evidenceVersion===3?day.processed || {}:{},fileCheckpoints=p.dailyDesk?.fileCheckpoints || {};
+    const sources=[],pending=[],nextProcessed={...processed},nextFiles={...fileCheckpoints},nextParts={...(!replacing&&day.evidenceVersion===3?day.sourceCheckpoints || {}:{})},questionBatch=new Set(); let budget=18000,shortened=false;
     const append=(source,fingerprint)=>{
       const checkpoint=hash([fingerprint,source.text]);
       if(nextParts[source.id]===checkpoint)return true;
@@ -213,12 +215,13 @@ class DailyDesk {
       if(day.status==='error'||JSON.stringify(nextFiles)!==JSON.stringify(fileCheckpoints)||JSON.stringify(nextParts)!==JSON.stringify(day.sourceCheckpoints||{}))await this.commit(()=>{
         if(this.isCurrent(id,archiveRevision)&&this.project(id)?.codex?.threadId===threadId){this.store.saveDailyDesk(id,date,{fileCheckpoints:nextFiles,sourceCheckpoints:nextParts,pendingFiles:pending.filter(id=>id.startsWith('file:')).length,pending:pending.length,unprocessedCount:pending.length,pendingConfirmations:0,status:day.organizedAt?'ready':'idle',message:'读取已恢复，没有新增内容，未调用模型'});this.notify({dailyUpdated:id});}
       });
-      await this.commit(()=>{if(this.isCurrent(id,archiveRevision)&&this.project(id)?.codex?.threadId===threadId)this.store.saveOrganizedReport(id,date);});
+      await this.commit(()=>{if(this.isCurrent(id,archiveRevision)&&this.project(id)?.codex?.threadId===threadId){this.store.saveOrganizedReport(id,date);this.store.saveDailyVersion(id,date);}});
       return {skipped:true,pending:pending.length,...this.outcome(id,date),message:day.unfinishedCount?'当天对话还在进行，请在回复结束后再次整理':'没有新增内容，已保存成果保留'};
     }
     sources.sort((a,b)=>String(a.timestamp || '').localeCompare(String(b.timestamp || '')) || a.id.localeCompare(b.id,undefined,{numeric:true}));
     const previous=p.dailyDesk?.overview || {};
-    const previousItems=((p.codex?.dailySummaries || []).find(s=>s.date===date)?.items || []).filter(item=>!materialOnly(item));
+    const coveredTurns=new Set(sources.filter(source=>source.turnId).map(source=>source.turnId));
+    const previousItems=((p.codex?.dailySummaries || []).find(s=>s.date===date)?.items || []).filter(item=>!materialOnly(item)&&(!replacing||!(item.turnIds||[]).length||(item.turnIds||[]).some(id=>!coveredTurns.has(id))));
     const materialReferences=[];let tagBudget=2400;
     for(const hint of [...p.materialReferences||[]].reverse()){
       if(hint.labels.length||!sources.some(source=>source.id===`turn:${hint.turnId}`))continue;
@@ -243,7 +246,7 @@ class DailyDesk {
       const materialTags=validateModelTags(output.materialTags,input.materialReferences);
       await this.commit(()=>{
         if(this.stopped || !this.isCurrent(id,archiveRevision) || this.project(id)?.codex?.threadId!==threadId) throw new Error('会话或归档状态已变化');
-        this.store.applyDailyDesk(id,{date,threadId,items:result.items,requirements:result.requirements,confirmations:result.confirmations,materialTags,digest:{overview:result.overview,reportText:organizedReport(p.name,result,output,{hasTurns:sources.some(s=>s.id.startsWith('turn:')),previousDigest:day.digest}),workEvidenceVersion:2},processed:nextProcessed,fileCheckpoints:nextFiles,sourceCheckpoints:nextParts,evidenceVersion:3,pendingFiles:pending.filter(id=>id.startsWith('file:')).length,pending:pending.length,partial:!!(raw.partial||shortened||result.pendingConfirmationPoints.length),pendingConfirmations:result.pendingConfirmationPoints.length,fingerprint:hash(sources)});
+        this.store.applyDailyDesk(id,{date,mode,threadId,items:result.items,requirements:result.requirements,confirmations:result.confirmations,materialTags,digest:{overview:result.overview,reportText:organizedReport(p.name,result,output,{hasTurns:sources.some(s=>s.id.startsWith('turn:')),previousDigest:replacing?null:day.digest}),workEvidenceVersion:2},processed:nextProcessed,fileCheckpoints:nextFiles,sourceCheckpoints:nextParts,evidenceVersion:3,pendingFiles:pending.filter(id=>id.startsWith('file:')).length,pending:pending.length,partial:!!(raw.partial||shortened||result.pendingConfirmationPoints.length),pendingConfirmations:result.pendingConfirmationPoints.length,fingerprint:hash(sources)});
         this.rollover(id);
         this.notify({dailyUpdated:id});
       });
@@ -255,7 +258,7 @@ class DailyDesk {
   }
   outcome(id,date){
     const p=this.project(id),day=p.dailyDesk?.days?.[date]||{};
-    return {workCount:(p.records||[]).filter(item=>item.date===date&&(item.manual||item.confirmed||!materialOnly(item))).length,reportSaved:(p.reports||[]).some(report=>report.date===date),unfinishedCount:day.unfinishedCount||0,archiveWarning:p.archiveWarning||''};
+    return {...this.store.verifyDailySaved(id,date),workCount:(p.records||[]).filter(item=>item.date===date&&(item.manual||item.confirmed||!materialOnly(item))).length,reportSaved:(p.reports||[]).some(report=>report.date===date),unfinishedCount:day.unfinishedCount||0,archiveWarning:p.archiveWarning||''};
   }
   async runAll(date=localDate(this.now())) {
     const results=[];

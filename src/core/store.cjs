@@ -1,5 +1,6 @@
 'use strict';
 const {materialOnly,workReport}=require('./daily-report.cjs');
+const dailyHistory=require('./daily-history.cjs');
 
 const fs = require('node:fs');
 const fsp = fs.promises;
@@ -233,6 +234,12 @@ class Store {
     // Keep the fingerprint of the exact archive loaded by this process.
     this.diskHash ??= this._diskHash();
     if (!fs.existsSync(this.statePath) || this.recoveryWarning) this._persist();
+    const legacy=this.state.historyFormatVersion!==1;let recovered=false;
+    for(const project of this.state.projects){
+      recovered=dailyHistory.reconcile(this,project)||recovered;
+      if(legacy)dailyHistory.migrate(this,project);
+    }
+    if(legacy||recovered){this.state.historyFormatVersion=1;this._persist();}
   }
 
   _readState(filePath, track = false) {
@@ -268,7 +275,7 @@ class Store {
         try { const backup = this._readState(this.backupPath); this.recoveryWarning = '主档案缺失，已从备份恢复。'; return backup; }
         catch (error) { throw new Error(`主档案缺失且备份损坏，请保留管理目录后恢复备份。原因：${error.message}`); }
       }
-      return { version: 1, settings: { summarizer: { ...SUMMARIZER_DEFAULTS } }, projects: [] };
+      return { version: 1, historyFormatVersion:1, settings: { summarizer: { ...SUMMARIZER_DEFAULTS } }, projects: [] };
     }
     try { return this._readState(this.statePath, true); } catch (error) {
       try {
@@ -289,10 +296,11 @@ class Store {
   refreshFromDisk() {
     try {
       const text = fs.readFileSync(this.statePath, 'utf8'), hash = this._hash(text);
-      if (hash === this.diskHash) return false;
-      const next = this._parseState(text);
-      this.state = next;
-      this.diskHash = hash;
+      const changed=hash!==this.diskHash;
+      if(changed){this.state=this._parseState(text);this.diskHash=hash;}
+      let recovered=false;for(const project of this.state.projects)recovered=dailyHistory.reconcile(this,project)||recovered;
+      if(recovered)this._persist();
+      if(!changed&&!recovered)return false;
       this.recoveryWarning = '';
       return true;
     } catch (error) {
@@ -328,7 +336,14 @@ class Store {
       try { this._readState(this.statePath); this._atomicWrite(this.backupPath, fs.readFileSync(this.statePath, 'utf8')); } catch { /* Keep the previous valid backup. */ }
     }
     const text = JSON.stringify(this.state, null, 2);
-    this._atomicWrite(this.statePath, text);
+    try{
+      this._atomicWrite(this.statePath, text);
+      if(fs.readFileSync(this.statePath,'utf8')!==text)throw new Error('主档案保存后回读不一致');
+    }catch(error){
+      // Failed disk writes must not leave the renderer with an unsaved success.
+      try{this.state=this._readState(this.statePath,true);}catch{}
+      throw new Error(`保存未通过回读核验，原历史版本已保留。原因：${error.message}`);
+    }
     this.diskHash = this._hash(text);
     if (!fs.existsSync(this.backupPath)) this._atomicWrite(this.backupPath, JSON.stringify(this.state, null, 2));
   }
@@ -350,17 +365,22 @@ class Store {
     const confirmations = (project.requirementConfirmations || []).map(item => `## ${item.scenario}\n\n${field('状态', item.status)}${field('待确认', item.question)}${field('临时方案', item.workaround)}${field('解决结论', item.resolution)}${field('来源', item.sourceRef)}${field('最早相关对话', sourceTimeText(item.sourceFirstAt))}${field('最近相关对话', sourceTimeText(item.sourceLastAt))}`).join('\n');
     this._atomicWrite(path.join(base, '需求清单.md'), `# ${project.name} · 需求清单\n\n${requirements || '暂无需求。\n'}\n# 需求确认（含已解决历史）\n\n${confirmations || '暂无确认事项。\n'}`);
     this._atomicWrite(path.join(base, '需求确认.md'), `# ${project.name} · 需求确认\n\n${confirmations || '暂无确认事项。\n'}`);
-    const dates = [...new Set(project.records.map(record => record.date))];
+    const dates = [...new Set([...project.records.map(record => record.date),...Object.keys(project.dailyHistory||{})])];
     const recordsDir = path.join(base, '工作记录');
     fs.mkdirSync(recordsDir, { recursive: true });
-    for (const name of fs.readdirSync(recordsDir)) {
-      if (/^\d{4}-\d{2}-\d{2}\.md$/.test(name) && !dates.includes(name.slice(0, 10))) fs.unlinkSync(path.join(recordsDir, name));
-    }
+    // Old exports can be the only remaining copy after an interrupted save.
+    // Keep them; dated history is never pruned during an unrelated archive.
     for (const date of dates) {
       const entries = project.records.filter(record => record.date === date).map(record => `## ${record.title}\n\n${field('编号', record.id)}${field('确认', record.confirmed ? '已确认' : '待确认，不纳入日报')}${field('原因', record.cause)}${field('处理', record.action)}${field('结果', record.result)}${field('状态', record.status)}${field('来源', record.sourceRef)}${record.attachments.length ? field('附件', record.attachments.map(item => typeof item === 'string' ? item : item.path || item.name || '').join('；')) : ''}`).join('\n');
       this._atomicWrite(path.join(recordsDir, `${date}.md`), `# ${project.name} · ${date}\n\n${entries}`);
     }
     for (const report of project.reports) this._atomicWrite(path.join(base, '日报', `${report.date}.md`), report.text);
+    for(const [date,versions] of Object.entries(project.dailyHistory||{})){
+      const saved=versions.at(-1);if(!saved)continue;
+      const rows=saved.requirements.map(row=>`## ${row.title}\n\n${field('状态',row.status)}${field('内容',row.description)}${field('来源',row.sourceRef)}`).join('\n');
+      const questions=saved.confirmations.map(row=>`## ${row.scenario}\n\n${field('状态',row.status)}${field('待确认',row.question)}${field('临时方案',row.workaround)}${field('解决结论',row.resolution)}`).join('\n');
+      this._atomicWrite(path.join(base,'需求清单',date+'.md'),`# ${project.name} · ${date} 需求清单\n\n${rows}\n# 客户确认\n\n${questions}`);
+    }
     const autoDir = path.join(base, '自动整理');
     fs.mkdirSync(autoDir, { recursive: true });
     const codex = codexDefaults(project.codex);
@@ -370,15 +390,33 @@ class Store {
     }
     const autoDates = new Set(codex.dailySummaries.map(summary => summary.date));
     for (const summary of codex.dailySummaries) this._atomicWrite(path.join(autoDir, `${summary.date}.md`), summary.reportText);
-    for (const name of fs.readdirSync(autoDir)) if (/^\d{4}-\d{2}-\d{2}\.md$/.test(name) && !autoDates.has(name.slice(0, 10))) fs.unlinkSync(path.join(autoDir, name));
   }
 
-  _commit(project) {
+  _commit(project,{historyDate,historyDates=[],historyReason,historyValue,historyValues={}}={}) {
     if (this._project(project.id) !== project) throw new Error('本地档案已更新，请重新执行本次操作。');
     project.updatedAt = now();
+    try{for(const date of [...new Set([historyDate,...historyDates].filter(Boolean))])dailyHistory.append(this,project,dateValue(date),{reason:historyReason,value:historyValues[date]||historyValue});}
+    catch(error){try{this.state=this._readState(this.statePath,true);}catch{}throw error;}
     this._persist();
     try { this._archive(project); project.archiveWarning = ''; } catch (error) { project.archiveWarning = `档案文件写入失败：${error.message}`; this._persist(); }
     return clone(project);
+  }
+
+  saveDailyVersion(projectId,date,reason='保存当天档案'){
+    const project=this._project(projectId);date=dateValue(date);
+    const prior=dailyHistory.latest(project,date);
+    const saved=dailyHistory.append(this,project,date,{reason});
+    if(prior?.id!==saved.id)this._persist();
+    return this.verifyDailySaved(projectId,date);
+  }
+
+  verifyDailySaved(projectId,date){
+    const disk=this._readState(this.statePath),project=disk.projects.find(row=>row.id===projectId),saved=dailyHistory.latest(project||{},dateValue(date));
+    const expected=dailyHistory.latest(this._project(projectId),date);
+    if(!saved||saved.id!==expected?.id||!dailyHistory.validRevision(saved))throw new Error('当天成果尚未通过主档案回读核验，请重试保存。');
+    const file=path.join(this.dataDir,'projects',projectId,'历史版本',date,saved.id+'.json'),receipt=JSON.parse(fs.readFileSync(file,'utf8'));
+    if(receipt.revision?.fingerprint!==saved.fingerprint||!dailyHistory.validRevision(receipt.revision))throw new Error('当天历史版本回读失败，请保留档案并重试。');
+    return {savedVerified:true,revisionId:saved.id,versionCount:project.dailyHistory[date].length};
   }
 
   getState() {
@@ -700,7 +738,7 @@ class Store {
     if (existing?.managedBy === 'requirements-auto') item.manual = true;
     if (own(input,'questions')) item.questions = requirementStrings(input.questions,'待确认问题',20,500);
     if (existing) project.requirements[project.requirements.indexOf(existing)] = item; else project.requirements.push(item);
-    return this._commit(project);
+    return this._commit(project,{historyDate:today(),historyReason:'编辑需求'});
   }
 
   removeRequirement(projectId, reqId) {
@@ -714,7 +752,7 @@ class Store {
       });
     }
     project.requirements = project.requirements.filter(item => item.id !== reqId);
-    return this._commit(project);
+    return this._commit(project,{historyDate:today(),historyReason:'更新需求清单'});
   }
 
   setRequirementAnalysis(projectId, patch = {}) {
@@ -742,7 +780,7 @@ class Store {
       sourceFirstAt: existing?.sourceFirstAt || '', sourceLastAt: existing?.sourceLastAt || '' });
     const record = { ...existing, ...item, id: existing?.id || id(), manual: true, managedBy: existing?.managedBy || 'manual', createdAt: existing?.createdAt || now(), updatedAt: now() };
     project.requirementConfirmations = existing ? entries.map(item => item.id === existing.id ? record : item) : [...entries,record];
-    return this._commit(project);
+    return this._commit(project,{historyDate:today(),historyReason:'编辑客户确认'});
   }
 
   removeRequirementConfirmation(projectId, confirmationId) {
@@ -844,7 +882,8 @@ class Store {
     const partial = analysis.coveragePartial || (analysis.warnings || []).some(warning => /未读取|截断|提取失败|无法读取|上下文不完整|尚无可提取/.test(warning));
     project.requirementAnalysis = requirementAnalysisDefaults({ ...currentAnalysis,...analysis, blockedFingerprint: '',
       updatedAt: now(), status: { state: 'ready', message: partial ? '已整理可读取内容，部分资料尚未读取' : '需求已整理', updatedAt: now() } });
-    return this._commit(project);
+    const sourceDays=[...new Set([today(),...normalized,...normalizedConfirmations].map(row=>typeof row==='string'?row:row.sourceLastAt?new Date(Date.parse(row.sourceLastAt)+8*3600000).toISOString().slice(0,10):'').filter(Boolean))];
+    return this._commit(project,{historyDates:sourceDays,historyReason:'需求更新',historyValues:Object.fromEntries(sourceDays.map(date=>[date,dailyHistory.snapshot(project,date)]))});
   }
 
   upsertRecord(projectId, input = {}) {
@@ -893,7 +932,7 @@ class Store {
       createdAt: existing?.createdAt || now(), updatedAt: now(),
     };
     if (existing) project.records[project.records.indexOf(existing)] = item; else project.records.push(item);
-    return this._commit(project);
+    return this._commit(project,{historyDate:date,historyReason:'编辑工作记录'});
   }
 
   removeRecord(projectId, recordId) {
@@ -905,7 +944,7 @@ class Store {
       project.codex.summaryDismissals = uniqueValues([...project.codex.summaryDismissals, ...itemKeys(record).map(issueKey => ({ date: record.date, issueKey, threadId: record.origin?.threadId || project.codex.threadId }))]);
     }
     project.records = project.records.filter(item => item.id !== recordId);
-    return this._commit(project);
+    return this._commit(project,{historyDate:record?.date,historyReason:'更新工作记录'});
   }
 
   setSummaryStatus(projectId, input = {}) {
@@ -1007,8 +1046,8 @@ class Store {
       }
       grouped.set(issueKey, item);
     }
-    const ownedDrafts = project.records.filter(record => record.date === date && record.managedBy === 'codex-auto' && !record.confirmed && !record.manual);
-    const retained = project.records.filter(record => !(record.date === date && record.managedBy === 'codex-auto' && !record.confirmed && !record.manual));
+    const ownedDrafts = project.records.filter(record => record.date === date && record.managedBy === 'codex-auto' && !record.confirmed && !record.manual && !record.recoveredFrom);
+    const retained = project.records.filter(record => !(record.date === date && record.managedBy === 'codex-auto' && !record.confirmed && !record.manual && !record.recoveredFrom));
     const dismissedKey = key => (codex.summaryDismissals || []).some(entry => entry.date === date && entry.issueKey === key && entry.threadId === threadId);
     const protectedFor = item => retained.find(record => record.date === date && (sameIssue(record, item) || normalizedTitle(record.title) === normalizedTitle(item.title)));
     const reconciled = new Map(), claimed = new Map();
@@ -1067,7 +1106,7 @@ class Store {
     const project = this._project(projectId);
     date = dateValue(date);
     const organized = project.dailyDesk?.days?.[date];
-    if (organized?.digest?.workEvidenceVersion===2 && organized.digest.reportText && !(project.codex?.summaryDismissals||[]).some(d=>d.date===date&&d.threadId===project.codex?.threadId) && !project.records.some(r => r.date === date && (r.manual || r.confirmed))) {
+    if (organized?.digest?.workEvidenceVersion===2 && organized.digest.reportText && !(project.codex?.summaryDismissals||[]).some(d=>d.date===date&&d.threadId===project.codex?.threadId) && !project.records.some(r => r.date === date && (r.manual || r.confirmed || r.recoveredFrom))) {
       return { text: organized.digest.reportText, date, recordIds: project.records.filter(r => r.date === date).map(r => r.id), method: organized.digest.method || 'model', needsReview: true };
     }
     const confirmed = project.records.filter(record => record.date === date && record.confirmed === true);
@@ -1122,7 +1161,7 @@ class Store {
     const existing = project.reports.find(report => report.date === date);
     const report = { id: existing?.id || id(), date, text: value, autoArchived: automatic, updatedAt: now(), path: path.join(this._projectDir(projectId), '日报', `${date}.md`) };
     if (existing) project.reports[project.reports.indexOf(existing)] = report; else project.reports.push(report);
-    return this._commit(project);
+    return this._commit(project,{historyDate:date,historyReason:automatic?'保存自动日报':'编辑日报'});
   }
 
   saveOrganizedReport(projectId, date) {
@@ -1160,6 +1199,8 @@ class Store {
     shadow.dataDir = this.dataDir;
     shadow._persist = () => {};
     shadow._commit = value => clone(value);
+    const oldVersion=dailyHistory.latest(project,date),latestDate=Object.keys(project.dailyHistory||{}).sort().at(-1),historical=!!latestDate&&date<latestDate;
+    if(historical&&oldVersion){const prior=shadow._project(projectId);prior.requirements=clone(oldVersion.requirements);prior.requirementConfirmations=clone(oldVersion.confirmations);}
     shadow.applyRequirementSummary(projectId, { items: input.requirements, confirmations: input.confirmations, method: 'model', threadId: input.threadId });
     shadow.applyDailySummary(projectId, { date, items: input.items, reportText:input.digest.reportText, method: 'model', fingerprint: input.fingerprint, threadId: input.threadId });
     const next = shadow._project(projectId), time = now();
@@ -1175,9 +1216,12 @@ class Store {
     next.dailyDesk.fileCheckpoints = input.fileCheckpoints;
     // An older day must never replace the current project introduction/progress.
     if (!next.dailyDesk.overviewDate || date >= next.dailyDesk.overviewDate) { next.dailyDesk.overview = input.digest.overview; next.dailyDesk.overviewDate = date; }
+    if(input.mode==='replace'&&next.reports.find(row=>row.date===date))next.reports.find(row=>row.date===date).autoArchived=true;
     shadow.saveOrganizedReport(projectId,date);
+    const historyValue=dailyHistory.snapshot(next,date);
+    if(historical){next.requirements=project.requirements;next.requirementConfirmations=project.requirementConfirmations;}
     Object.assign(project, next);
-    return this._commit(project);
+    return this._commit(project,{historyDate:date,historyReason:input.mode==='replace'?'重新整理当天':'追加整理',historyValue});
   }
 
   startCycle(projectId, name) {

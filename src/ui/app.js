@@ -5,6 +5,20 @@ import {materialBrowser,materialTagsMarkup,folderMarkup} from './material-browse
 const navigation = [ ['overview','项目概览','overview'], ['files','资料库','files'], ['requirements','需求清单','requirements'], ['records','工作记录','records'], ['reports','日报','reports'], ['codex','Codex 收录','codex'] ];
 let state={projects:[],settings:{}}, route='overview', fileQuery='', fileKind='', fileDate='', fileGroup='', recordDate=today(), reportDate=today(), codexDate=today(), codexResult=null;
 let dailyBusy=false, uiDay=today();
+let organizeMode='append';
+const dailyVersionSelections=new Map();
+const dailyVersionKey=(p,date)=>`${p.id}:${date}`;
+function dailyVersion(p,date){const versions=p.dailyHistory?.[date]||[],selected=dailyVersionSelections.get(dailyVersionKey(p,date));return versions.find(row=>row.id===selected)||versions.at(-1);}
+function oldDailyVersion(p,date){const version=dailyVersion(p,date);return !!version&&version.id!==p.dailyHistory[date].at(-1).id;}
+function versionSelect(p,date){
+  const versions=p.dailyHistory?.[date]||[],selected=dailyVersion(p,date);if(!versions.length)return '';
+  return `<select id="daily-version" data-date="${esc(date)}" aria-label="选择已保存版本">${[...versions].reverse().map(row=>`<option value="${esc(row.id)}" ${row.id===selected.id?'selected':''}>${esc(requirementTime(row.savedAt))} · 第 ${row.number} 版${row.legacy?' · 历史档案':''}</option>`).join('')}</select>`;
+}
+function dailyViewProject(p,date){
+  const version=dailyVersion(p,date);if(!version)return p;
+  return {...p,records:version.records,reports:version.report?[version.report]:[],requirements:version.requirements,requirementConfirmations:version.confirmations,
+    dailyDesk:{...p.dailyDesk,days:{...p.dailyDesk?.days,[date]:{...p.dailyDesk?.days?.[date],digest:version.digest}}}};
+}
 let reportDrafts=new Map(), reportGenerated=new Map(), reportPending=new Map(), reportModes=new Map(), modalSubmit=null, modalTest=null, modalReturnFocus=null, codexUpdated=false, originalOpen=false, originalLoading=false;
 const codexDateSelections=new Map();
 let codexContext='',originalRequestToken=0;
@@ -58,11 +72,12 @@ function selectCodexDate(date){if(!validDate(date))return;codexDateSelections.se
 async function refresh(renderView=true){
   const sequence=++refreshSequence;
   const focusId=document.activeElement?.id, selectionStart=document.activeElement?.selectionStart, selectionEnd=document.activeElement?.selectionEnd, scrollY=window.scrollY;
-  const priorProjectId=project()?.id;let next;
+  const priorProject=project(),priorProjectId=priorProject?.id;let next;
   try{next=await request('state');}catch(error){if(sequence!==refreshSequence)return;throw error;}
   if(sequence!==refreshSequence)return;
   state=next;
   const p=project();if(priorProjectId&&p?.id!==priorProjectId){fileQuery='';fileKind='';fileDate='';fileGroup='';fileTag='';}
+  if(p?.id===priorProjectId)for(const [date,versions] of Object.entries(priorProject.dailyHistory||{})){const key=dailyVersionKey(p,date);if(dailyVersionSelections.get(key)===versions.at(-1)?.id&&p.dailyHistory?.[date]?.at(-1)?.id!==versions.at(-1)?.id)dailyVersionSelections.delete(key);}
   syncCodexDate(p);
   $('project-select').innerHTML=state.projects.length ? state.projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join(''):'<option value="">'+(state.archivedProjects?.length?'暂无关注项目':'尚未关联项目')+'</option>';
   if(p) $('project-select').value=p.id;
@@ -113,7 +128,7 @@ function renderWelcome(){
 function renderOverview(p){
   const files=safeFiles(p), reqs=p.requirements||[], recs=sortedRecords(p), deliveries=p.deliveries||[];
   const running=dailyBusy||p.dailyDesk?.days?.[today()]?.status==='running';
-  $('workspace').innerHTML=heading('PROJECT OVERVIEW',p.name,'',actionButton('edit-project','编辑项目','edit'),actionButton('daily-current',running?'整理中…':'整理当前项目','refresh',running?'disabled':'','primary overview-organize'))+
+  $('workspace').innerHTML=heading('PROJECT OVERVIEW',p.name,'',actionButton('edit-project','编辑项目','edit'),`<select id="organize-mode" aria-label="整理方式" ${running?'disabled':''}><option value="append" ${organizeMode==='append'?'selected':''}>追加更新</option><option value="replace" ${organizeMode==='replace'?'selected':''}>重新整理当天</option></select>`+actionButton('daily-current',running?'整理中…':'整理当前项目','refresh',running?'disabled':'','primary overview-organize'))+
   `<div class="overview-grid overview-compact"><div><div class="stats-row"><div class="stat"><div class="stat-meta">${icon('files',17)}<span>资料索引</span></div><div class="stat-value">${files.length}</div><div class="stat-title">原始与补充资料、成果</div></div><div class="stat"><div class="stat-meta">${icon('requirements',17)}<span>需求事项</span></div><div class="stat-value">${reqs.filter(r=>r.status!=='已完成').length}</div><div class="stat-title">${reqs.filter(r=>r.status==='待确认').length} 项待确认</div></div><div class="stat"><div class="stat-meta">${icon('records',17)}<span>今日记录</span></div><div class="stat-value">${recs.filter(r=>r.date===today()).length}</div><div class="stat-title">${recs.filter(r=>r.date===today()&&r.confirmed).length} 项已确认</div></div></div></div><div><section class="panel overview-directories"><div class="panel-head"><div><h2>关联目录</h2>${materialScanMarkup(p)}</div>${materialRefreshButton('small')}</div><div class="panel-body">${[['source','原始资料',p.sourceDir],['dev','项目开发',p.devDir],['management','管理档案',p.managementDir||state.dataDir||state.settings?.dataDir||'由 FDE Desk 在本机维护']].map(([kind,label,path])=>`<div class="directory-item"><div class="directory-title">${esc(label)}${kind==='source'?'<span class="badge neutral">只读关联</span>':''}</div><div class="directory-path">${esc(path)}</div>${kind==='dev'&&p.indexArtifacts!==false&&p.artifactDir&&p.artifactDir!==p.devDir?`<div class="directory-path">成果关注：${esc(p.artifactDir)}</div>`:''}<div class="directory-operations"><button class="link-btn" data-action="open-directory" data-kind="${kind}">打开目录</button><button class="link-btn" data-action="copy-directory" data-kind="${kind}">复制路径</button></div></div>`).join('')}</div></section></div><section class="panel span-full"><div class="panel-head"><div><h2>交付记录</h2><div class="caption">开发完成、自测通过和客户验收分别确认</div></div>${actionButton('new-delivery','记录交付','plus','','small')}</div><div class="panel-body">${deliveries.length?[...deliveries].reverse().map(d=>`<div class="delivery-row"><div class="actions"><strong>${esc(d.version||d.name||'版本交付')}</strong>${badge(d.status||'已交付')}<span class="small-text muted">${dayLabel(d.date||d.createdAt)}</span></div><p>${esc(d.description||d.summary||'')}</p>${d.path||d.sourceRef?`<div class="directory-path">${esc(d.path||d.sourceRef)}</div>`:''}</div>`).join(''):'<div class="empty-inline">尚未记录交付。完成第一版交付时，记下版本与待验证事项。</div>'}</div></section></div>`;
 }
 function renderFiles(p){
@@ -150,8 +165,9 @@ function requirementAfterISO(value){
 function requirementDate(p){return p.requirementsDateMode==='all'?'':p.requirementsDateMode==='date'?requirementAfterInput(p.requirementsAfter):today();}
 function requirementItemDate(item){return requirementAfterInput(item.sourceLastAt)||(validDate(item.organizedDate)?item.organizedDate:'');}
 function requirementView(p){
-  const allItems=p.requirements||[],allConfirmations=(Array.isArray(p.requirementConfirmations)?p.requirementConfirmations:[]).filter(item=>item&&typeof item.question==='string'&&item.question.trim());
-  const date=requirementDate(p),filtered=!!date,matches=item=>!filtered||requirementItemDate(item)===date;
+  const date=requirementDate(p),version=date&&dailyVersion(p,date),source=version?dailyViewProject(p,date):p;
+  const allItems=source.requirements||[],allConfirmations=(Array.isArray(source.requirementConfirmations)?source.requirementConfirmations:[]).filter(item=>item&&typeof item.question==='string'&&item.question.trim());
+  const filtered=!!date,matches=item=>!!version||!filtered||requirementItemDate(item)===date;
   const items=allItems.filter(matches),knownQuestions=new Set(allConfirmations.map(item=>confirmationQuestion(item.question)));
   const questions=requirementQuestions(items).filter(({text})=>!knownQuestions.has(confirmationQuestion(text)));
   const confirmations=allConfirmations.filter(matches),active=confirmations.filter(item=>item.status!=='已解决'),resolved=confirmations.filter(item=>item.status==='已解决');
@@ -172,15 +188,18 @@ function confirmationMarkup(p,item,resolved=false){
   return `<article class="requirement-confirmation ${resolved?'resolved':'requirement-question'}" data-confirmation="${esc(item.id)}"><div class="confirmation-content">${requirementTimeMarkup(item)}<dl class="confirmation-fields"><div><dt>场景</dt><dd class="confirmation-scenario">${esc(item.scenario||'场景尚未补充')}</dd></div>${item.workaround?`<div><dt>临时处理</dt><dd class="confirmation-workaround">${esc(item.workaround)}</dd></div>`:''}<div><dt>${resolved?'确认事项':'待确认'}</dt><dd class="confirmation-question">${esc(item.question)}</dd></div>${resolved&&item.resolution?`<div><dt>确认结果</dt><dd class="confirmation-resolution">${esc(item.resolution)}</dd></div>`:''}</dl>${related.length?`<div class="confirmation-related">对应需求：${esc(related.join('、'))}</div>`:''}${requirementSourceMarkup(p,item)}</div><button class="link-btn" data-action="edit-requirement-confirmation" data-confirmation="${esc(item.id)}" aria-label="编辑 ${esc(brief(item.scenario||item.question,80))}">编辑</button></article>`;
 }
 function renderRequirements(p){
+  p=dailyViewProject(p,requirementDate(p));
   const view=requirementView(p),{items,questions,active,resolved}=view;
   const modelReady=state.modelSettings?.enabled&&(state.modelSettings?.keyConfigured||state.modelSettings?.keyRequired===false);
   const running=dailyBusy||p.dailyDesk?.days?.[today()]?.status==='running';
   const hasMaterials=safeFiles(p).some(file=>!file.missing&&['原始资料','补充资料'].includes(file.kind)),hasInput=hasMaterials||!!p.codex?.threadId;
   $('workspace').innerHTML=heading('REQUIREMENTS','需求清单','',actionButton('copy-requirements','复制需求摘要','copy',items.length||questions.length||active.length?'':'disabled','primary'))+
-  `<div class="requirement-time-filter"><label for="requirement-after">日期 <input id="requirement-after" type="date" value="${esc(view.date)}"></label>${historySelect('requirement-history',[...new Set([...(p.requirements||[]),...(p.requirementConfirmations||[])].map(requirementItemDate).filter(Boolean))].sort((a,b)=>b.localeCompare(a)),view.date)}${actionButton('today-requirement-filter','当日',null,'',p.requirementsDateMode!=='date'&&p.requirementsDateMode!=='all'?'small active':'small')}${actionButton('clear-requirement-filter','全部日期',null,'',!view.filtered?'small active':'small')}${view.undated?`<button id="requirement-undated" class="link-btn" data-action="clear-requirement-filter">无日期 ${view.undated}</button>`:''}</div>`+
+  `<div class="requirement-time-filter"><label for="requirement-after">日期 <input id="requirement-after" type="date" value="${esc(view.date)}"></label>${historySelect('requirement-history',[...new Set([...Object.keys(p.dailyHistory||{}),...[...(p.requirements||[]),...(p.requirementConfirmations||[])].map(requirementItemDate).filter(Boolean)])].sort((a,b)=>b.localeCompare(a)),view.date)}${actionButton('today-requirement-filter','当日',null,'',p.requirementsDateMode!=='date'&&p.requirementsDateMode!=='all'?'small active':'small')}${actionButton('clear-requirement-filter','全部日期',null,'',!view.filtered?'small active':'small')}${view.undated?`<button id="requirement-undated" class="link-btn" data-action="clear-requirement-filter">无日期 ${view.undated}</button>`:''}</div>`+
   `<section class="panel requirement-section" aria-labelledby="requirement-business-title"><div class="panel-head requirement-section-head"><div><h2 id="requirement-business-title">业务需求 <span>${items.length}</span></h2></div><button class="link-btn" data-action="new-requirement">${icon('plus',13)}补充需求</button></div>`+
   (items.length?`<div class="requirement-list panel-body requirement-scroll" role="region" aria-label="业务需求列表" tabindex="0">${items.map((r,i)=>`<article class="requirement-card" data-requirement="${esc(r.id)}"><div class="requirement-head"><div><h3>${esc(r.title)}</h3></div><div class="actions">${badge(r.status)}<button class="link-btn" data-action="edit-requirement" data-item="${esc(r.id)}" aria-label="编辑 ${esc(r.title)}">编辑 ${icon('edit',13)}</button></div></div><p class="description">${esc(r.description||'暂无补充说明')}</p>${requirementTimeMarkup(r)}${requirementSourceMarkup(p,r)}</article>`).join('')}</div>`:view.filtered?empty('当日暂无业务需求','','','requirements'):empty(!hasInput?'先补充业务资料':running?'正在整理业务需求':!modelReady?'先配置整理模型':'等待业务需求整理',!hasInput?'提供客户业务资料，或关联包含初次业务沟通的 Codex 会话。':running?'整理完成后会自动显示，无需手动填写。':!modelReady?'请在顶部模型设置中配置整理模型。':'在项目概览点击整理当前项目后，需求会显示在这里。',!hasInput?actionButton('add-files','补充资料','upload','','small')+actionButton('bind-codex','关联会话','link','','small'):'','requirements'))+`</section>`+
   `<section id="requirement-questions" class="panel requirement-questions" aria-labelledby="requirement-questions-title"><div class="panel-head"><h2 id="requirement-questions-title">待确认问题 <span>${questions.length+active.length}</span></h2></div><div class="panel-body requirement-scroll" role="region" aria-label="待确认问题列表" tabindex="0">${active.map(item=>confirmationMarkup(p,item)).join('')}${questions.map(({text,item})=>`<div class="requirement-question" data-requirement="${esc(item.id)}"><div><p>${esc(text)}</p><span>对应需求：${esc(item.title)}</span>${requirementTimeMarkup(item)}</div><button class="link-btn" data-action="edit-requirement" data-item="${esc(item.id)}" aria-label="编辑 ${esc(item.title)} 的待确认问题">编辑</button></div>`).join('')}${!active.length&&!questions.length?`<div class="empty-inline">${view.filtered?'当日暂无待确认问题。':(p.requirements||[]).length?'暂无已整理出的待确认问题。':'业务需求与暂缓事项整理后，会集中显示在这里。'}</div>`:''}${resolved.length?`<details id="requirement-resolved" class="requirement-resolved"><summary>已解决事项 (${resolved.length})</summary>${resolved.map(item=>confirmationMarkup(p,item,true)).join('')}</details>`:''}</div></section>`;
+  $('requirement-history')?.insertAdjacentHTML('afterend',versionSelect(p,view.date));
+  if(dailyVersion(p,view.date)&&(view.date!==today()||oldDailyVersion(p,view.date)))for(const button of $('workspace').querySelectorAll('[data-action="edit-requirement"],[data-action="edit-requirement-confirmation"],[data-action="new-requirement"]')){button.disabled=true;button.title='历史版本保留原样，可在当天或全部日期中编辑。';}
 }
 async function saveRequirementFilter(value,mode=value?'date':'all'){
   const p=project();if(!p)return;const after=requirementAfterISO(value),previous=requirementDate(p);if(after===(p.requirementsAfter||'')&&mode===p.requirementsDateMode){await refresh();return;}
@@ -193,22 +212,26 @@ async function organizeDaily(all=false,date=today()){
   const p=project();if(!p||dailyBusy)return;
   if(!all&&!p.codex?.threadId){await bindCodex();return;}
   dailyBusy=true;resetOriginalConversation();render();
-  try{const result=await request(all?'daily:all':'daily:run',{id:p.id,date});const errors=result.results?.filter(r=>r.error)||[];if(!errors.some(r=>r.id===p.id)){recordDate=reportDate=codexDate=date;}await refresh();const message=all?`已检查 ${result.results.length} 个项目，成果已保存本地`:result.skipped?result.message:result.workCount?`已保存本地：${result.workCount} 项工作记录${result.reportSaved?'及日报':''}`:result.unfinishedCount?'已保存项目和需求；当天对话还在进行，回复结束后可再次整理':'已保存项目和需求；当天暂无可提炼的工作内容';const pending=result.pending?`，还有 ${result.pending} 项待整理`:'';notify(errors.length?errors.map(r=>`${r.name}：${r.error}`).join('；'):result.archiveWarning||message+pending,!!errors.length||!!result.archiveWarning);}
+  try{const result=await request(all?'daily:all':'daily:run',{id:p.id,date,mode:organizeMode});const errors=result.results?.filter(r=>r.error)||[];if(!all&&!result.savedVerified)throw new Error('整理结果尚未通过保存核验，请更新程序或重试。');dailyVersionSelections.delete(dailyVersionKey(p,date));if(!errors.some(r=>r.id===p.id)){recordDate=reportDate=codexDate=date;}await refresh();const message=all?`已检查 ${result.results.length} 个项目，成果已保存本地`:result.skipped?result.message:result.workCount?`已保存并核验：${result.workCount} 项工作记录${result.reportSaved?'及日报':''}`:result.unfinishedCount?'已保存项目和需求；当天对话还在进行，回复结束后可再次整理':'已保存项目和需求；当天暂无可提炼的工作内容';const pending=result.pending?`，还有 ${result.pending} 项待整理`:'';notify(errors.length?errors.map(r=>`${r.name}：${r.error}`).join('；'):result.archiveWarning||message+pending,!!errors.length||!!result.archiveWarning);}
   finally{dailyBusy=false;render();}
 }
-function historyDates(p){return [...new Set([...(p.records||[]).map(item=>item.date),...(p.reports||[]).map(item=>item.date),...(p.codex?.dailySummaries||[]).map(item=>item.date),...Object.entries(p.dailyDesk?.days||{}).filter(([,day])=>day.digest?.reportText).map(([date])=>date)])].filter(validDate).sort((a,b)=>b.localeCompare(a));}
+function historyDates(p){return [...new Set([...(p.records||[]).map(item=>item.date),...(p.reports||[]).map(item=>item.date),...Object.keys(p.dailyHistory||{}),...(p.codex?.dailySummaries||[]).map(item=>item.date),...Object.entries(p.dailyDesk?.days||{}).filter(([,day])=>day.digest?.reportText).map(([date])=>date)])].filter(validDate).sort((a,b)=>b.localeCompare(a));}
 function historySelect(id,dates,selected){return dates.length?`<select id="${id}" aria-label="选择历史日期"><option value="">历史日期</option>${dates.map(date=>`<option value="${esc(date)}" ${date===selected?'selected':''}>${esc(date)}</option>`).join('')}</select>`:'';}
 function renderRecords(p){
+  const original=p,readonly=oldDailyVersion(p,recordDate);if(recordDate)p=dailyViewProject(p,recordDate);
   const records=sortedRecords(p).filter(r=>!recordDate||r.date===recordDate), groups=Map.groupBy?Map.groupBy(records,r=>r.date):records.reduce((m,r)=>(m.has(r.date)||m.set(r.date,[]),m.get(r.date).push(r),m),new Map());
   $('workspace').innerHTML=heading('WORK LOG','工作记录','',actionButton('new-record','记录工作','plus','','primary'))+
   `<div class="toolbar records-toolbar"><div class="filters"><input type="date" id="record-date" value="${esc(recordDate)}" aria-label="按工作日期筛选">${historySelect('record-history',historyDates(p),recordDate)}${recordDate?'<button class="btn small" data-action="clear-record-date">全部日期</button>':''}</div></div>`+
   (records.length?[...groups].map(([date,items])=>`<div class="records-day"><h2>${esc(date)}</h2><span>${items.length} 项工作记录</span></div>${items.map(r=>`<article class="record-card"><div class="record-head"><div><div class="item-key">${esc(r.issueKey||'未设置事项编号')}</div><h3>${esc(r.title)}</h3></div><div class="actions">${badge(r.status)}<button class="icon-btn" data-action="edit-record" data-item="${esc(r.id)}" aria-label="编辑 ${esc(r.title)}">${icon('edit',16)}</button></div></div><div class="record-columns"><div>${r.cause?`<div class="record-field"><div class="data-label">原因</div><div class="data-value">${esc(r.cause)}</div></div>`:''}<div class="record-field"><div class="data-label">处理</div><div class="data-value">${esc(r.action||'尚未填写')}</div></div></div><div class="record-field"><div class="data-label">结果</div><div class="data-value">${esc(r.result||'尚未明确')}</div></div></div>${r.attachments?.length?`<div class="attachment-line">附件：${esc(r.attachments.map(sourceText).join('\n'))}</div>`:''}<div class="record-footer"><div class="confirmation ${r.confirmed?'':'unconfirmed'}">${icon(r.confirmed?'check':'clock',13)}${automaticRecord(r)?'自动整理 · 可编辑':r.confirmed?'已核对 · 可用于日报':r.summaryOrigin?'已手动调整 · 待核对':'手工草稿 · 确认后可用于日报'}</div>${r.sourceRef?`<span class="small-text muted record-source">来源：${esc(sourceText(r.sourceRef))}</span>`:''}</div></article>`).join('')}`).join(''):empty('今天的有效工作，从这里留下',recordDate?'所选日期暂无记录。':'记下问题、原因、有效处理和结果。长对话留在 Codex，摘要留在这里。',actionButton('new-record','添加工作记录','plus','','primary'),'records'));
+  $('record-history')?.insertAdjacentHTML('afterend',versionSelect(original,recordDate));
+  if(readonly)for(const button of $('workspace').querySelectorAll('[data-action="edit-record"],[data-action="new-record"]')){button.disabled=true;button.title='正在查看历史版本。';}
 }
-function reportKey(p,date=reportDate){return `${p.id}:${date}`;}
+function reportKey(p,date=reportDate){return `${p.id}:${date}${oldDailyVersion(p,date)?':'+dailyVersion(p,date).id:''}`;}
 function reportSignature(p,date){return JSON.stringify([p.dailyDesk?.days?.[date]?.organizedAt,p.dailyDesk?.days?.[date]?.digest?.reportText,(p.reports||[]).find(r=>r.date===date)?.updatedAt,summaryFor(p,date)?.fingerprint,summaryFor(p,date)?.updatedAt,(p.records||[]).filter(r=>r.date===date).map(r=>[r.id,r.updatedAt,r.confirmed,r.title,r.action,r.result]),(p.codex?.summaryDismissals||[]).filter(d=>d.date===date&&d.threadId===p.codex?.threadId)]);}
 function reportText(p,date=reportDate){
   const key=reportKey(p,date),generated=reportGenerated.get(key),saved=(p.reports||[]).find(r=>r.date===date),validGenerated=generated?.signature===reportSignature(p,date);
   if(reportDrafts.has(key))return reportDrafts.get(key);
+  const version=dailyVersion(p,date);if(version)return version.report?.text||version.digest?.reportText||'';
   if(validGenerated&&generated.explicit)return generated.text||'';
   if(saved&&!saved.autoArchived)return saved.text||'';
   if(validGenerated)return generated.text||'';
@@ -218,6 +241,7 @@ function reportText(p,date=reportDate){
 function currentReportText(p,date=reportDate){const editor=$('report-text');return route==='reports'&&editor?.dataset.reportKey===reportKey(p,date)?editor.value:reportText(p,date);}
 function reportPreviewMarkup(text){return text.trim()?renderMarkdown(text):'<div class="report-preview-empty">当天暂无日报内容。在项目概览点击整理当前项目后查看，也可切换到“编辑原文”填写。</div>';}
 async function ensureReportContent(p,date){
+  if(dailyVersion(p,date))return;
   const key=reportKey(p,date),signature=reportSignature(p,date);
   if(reportDrafts.has(key)||(p.reports||[]).some(r=>r.date===date&&!r.autoArchived)||reportGenerated.get(key)?.signature===signature||reportPending.has(key))return;
   reportPending.set(key,signature);
@@ -233,9 +257,13 @@ async function ensureReportContent(p,date){
   finally{reportPending.delete(key);const current=project();if(route==='reports'&&current?.id===p.id&&reportDate===date&&reportSignature(current,date)!==signature)void ensureReportContent(current,date);}
 }
 function renderReports(p){
+  const original=p,readonly=oldDailyVersion(p,reportDate),savedReports=p.reports;p=dailyViewProject(p,reportDate);
   const records=(p.records||[]).filter(r=>r.date===reportDate), confirmed=records.filter(r=>r.confirmed), auto=records.filter(automaticRecord), text=reportText(p),saved=(p.reports||[]).find(r=>r.date===reportDate),key=reportKey(p),editing=reportModes.get(key)==='edit',dirty=reportDrafts.has(key)&&(!saved||reportDrafts.get(key)!==saved.text);
   $('workspace').innerHTML=heading('DAILY REPORT','日报','')+
   `<div class="report-grid"><section class="panel report-document"><div class="report-toolbar"><label class="small-text">工作日期 <input type="date" id="report-date" value="${esc(reportDate)}" aria-label="日报日期"></label>${historySelect('report-history',historyDates(p),reportDate)}<div class="report-toolbar-actions"><div class="report-view-switch" role="group" aria-label="日报显示方式">${actionButton('preview-report','预览',null,`id="report-preview-mode" type="button" aria-pressed="${!editing}"`,'small'+(!editing?' selected':''))}${actionButton('edit-report','编辑原文','edit',`id="report-edit-mode" type="button" aria-pressed="${editing}"`,'small'+(editing?' selected':''))}</div></div></div><div id="report-draft-note" class="report-draft-note ${dirty?'edited':''}">${dirty?'编辑中的草稿':saved?'已保存 · 可继续编辑':'自动草稿 · 待核对'}</div><div id="report-preview" class="markdown-body report-preview" role="article" aria-label="日报预览" ${editing?'hidden':''}>${reportPreviewMarkup(text)}</div><textarea id="report-text" class="report-editor" data-report-key="${esc(key)}" aria-label="日报 Markdown 原文" spellcheck="false" ${editing?'':'hidden'} placeholder="用 Markdown 编辑日报内容…">${esc(text)}</textarea><div class="report-footer">${actionButton('save-report','保存',null)}${actionButton('copy-report','复制','copy')}${actionButton('export-report','导出 Markdown','upload','','primary')}</div></section><aside class="panel report-aside"><div class="eyebrow">${esc(reportDate)}</div><h3>当天工作</h3><div class="report-stat"><span>自动整理</span><strong>${auto.length}</strong></div><div class="report-stat"><span>已核对记录</span><strong>${confirmed.length}</strong></div><button class="link-btn report-record-link" data-action="show-day-records">查看当天工作 ${icon('arrow',14)}</button><div class="saved-reports"><h3>已保存日报</h3>${p.reports?.length?[...p.reports].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,12).map(r=>`<button class="saved-report" data-action="open-report" data-date="${esc(r.date)}">${esc(r.date)} ${icon('arrow',13)}</button>`).join(''):'<p>尚无已保存日报。</p>'}</div></aside></div>`;
+  $('report-history')?.insertAdjacentHTML('afterend',versionSelect(original,reportDate));
+  if(readonly){$('report-draft-note').textContent='历史版本 · 只读';for(const button of $('workspace').querySelectorAll('[data-action="save-report"],[data-action="edit-report"]'))button.disabled=true;$('report-text').readOnly=true;}
+  const list=$('workspace').querySelector('.saved-reports');if(list)list.innerHTML='<h3>已保存日报</h3>'+[...savedReports].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,12).map(r=>`<button class="saved-report" data-action="open-report" data-date="${esc(r.date)}">${esc(r.date)} ${icon('arrow',13)}</button>`).join('');
   void ensureReportContent(p,reportDate);
 }
 function renderCodex(p){
@@ -504,12 +532,12 @@ async function handleAction(action,target){
     case 'edit-requirement':requirementForm(p.requirements.find(r=>r.id===target.dataset.item));break;
     case 'delete-requirement':await request('requirement:remove',{id,requirementId:$('modal-form').dataset.item});closeForm();await refresh();notify('需求已删除');break;
     case 'new-record':recordForm();break;
-    case 'edit-record':recordForm(p.records.find(r=>r.id===target.dataset.item));break;
+    case 'edit-record':if(oldDailyVersion(p,recordDate))throw new Error('历史版本保留原样，请切换到最新版本。');recordForm(dailyViewProject(p,recordDate).records.find(r=>r.id===target.dataset.item));break;
     case 'delete-record':await request('record:remove',{id,recordId:$('modal-form').dataset.item});closeForm();await refresh();notify('工作记录已删除');break;
     case 'clear-record-date':recordDate='';await refresh();break;
     case 'new-cycle':showForm('新建交付周期','当前周期结束后，新的明确交付目标进入下一周期。',field('name','周期名称','',{required:true,placeholder:'例如：第二阶段 / 报表功能交付'}),async values=>{await request('cycle:start',{id,name:values.name});await refresh();notify('新周期已建立');});break;
     case 'new-delivery':deliveryForm();break;
-    case 'save-report':{const date=reportDate,key=reportKey(p,date),text=currentReportText(p,date);await request('report:save',{id,date,text});reportDrafts.delete(key);reportGenerated.delete(key);await refresh();notify('日报已保存');break;}
+    case 'save-report':{if(oldDailyVersion(p,reportDate))throw new Error('历史版本保留原样，请切换到最新版本。');const date=reportDate,key=reportKey(p,date),text=currentReportText(p,date);await request('report:save',{id,date,text});reportDrafts.delete(key);reportGenerated.delete(key);await refresh();notify('日报已保存');break;}
     case 'copy-report':{const text=currentReportText(p);if(!text.trim())throw new Error('日报内容为空，请先生成或填写。');await request('clipboard:text',{text});notify('日报已复制');break;}
     case 'export-report':{const date=reportDate,text=currentReportText(p,date);if(!text.trim())throw new Error('日报内容为空，请先生成或填写。');const output=await request('report:export',{id,date,text});if(output)notify('日报已导出');break;}
     case 'edit-report':case 'preview-report':{const key=reportKey(p),text=currentReportText(p);if(text!==reportText(p))reportDrafts.set(key,text);reportModes.set(key,action==='edit-report'?'edit':'preview');renderReports(p);(action==='edit-report'?$('report-text'):$('report-preview-mode'))?.focus({preventScroll:true});break;}
@@ -565,6 +593,8 @@ document.addEventListener('change',async event=>{
   if(el.id==='file-group'){fileGroup=el.value;renderFileRows();}
   if(el.id==='file-kind'){fileKind=el.value;renderFileRows();}
   if(el.id==='file-date'){fileDate=el.value;renderFileRows();}
+  if(el.id==='organize-mode'){organizeMode=el.value;return;}
+  if(el.id==='daily-version'){dailyVersionSelections.set(dailyVersionKey(project(),el.dataset.date),el.value);render();return;}
   if(el.id==='requirement-after'){try{await saveRequirementFilter(el.value);}catch(error){notify(error.message||String(error),true);}}
   if(el.id==='record-history'){if(el.value){recordDate=el.value;await refreshHistoryView();}return;}
   if(el.id==='report-history'){if(el.value){reportDate=el.value;await refreshHistoryView();}return;}
@@ -590,6 +620,7 @@ document.addEventListener('drop',async event=>{event.preventDefault();dragDepth=
 let changeTimer;
 window.addEventListener('fde-access-restored',()=>void refreshHistoryView());
 function clearPrivateView(){
+  dailyVersionSelections.clear();
   state={projects:[],settings:{}};reportDrafts.clear();reportGenerated.clear();reportModes.clear();resetOriginalConversation();
   $('workspace').replaceChildren();$('project-select').replaceChildren();$('breadcrumb-project').textContent='个人档案已锁定';
   for(const id of ['form-dialog','preview-dialog']){$(id)?.close();$(id)?.firstElementChild?.replaceChildren();}

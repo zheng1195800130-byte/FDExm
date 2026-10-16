@@ -59,3 +59,7 @@
 .requirement-list .requirement-head>.actions{flex:0 0 auto;gap:16px}.requirement-list .requirement-head .link-btn{font-size:11px}.requirement-list .requirement-card .description{margin:9px 0}.requirement-list .requirement-source-brief{margin-top:8px}
 
 .report-toolbar>select{min-width:125px;max-width:160px}.requirement-time-filter>select,.records-toolbar select{min-height:36px;font-size:12px}.report-toolbar{flex-wrap:wrap;gap:10px}
+/* Saved day versions share the existing date toolbar. */
+#daily-version{max-width:100%;min-width:150px}
+#organize-mode{max-width:160px}
+.report-toolbar,.requirement-time-filter,.records-toolbar .filters{flex-wrap:wrap}
