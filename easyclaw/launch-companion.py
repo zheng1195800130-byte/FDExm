@@ -7,13 +7,18 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-HEALTH = 'http://127.0.0.1:35639/health'
+PROFILE = json.loads((ROOT / 'native' / 'resources' / 'fde-easyclaw.json').read_text(encoding='utf-8'))
+PORT = PROFILE.get('port', 35639)
+if not isinstance(PORT, int) or not 1024 <= PORT <= 65535:
+    raise RuntimeError('本地工作服务端口无效。')
+HEALTH = 'http://127.0.0.1:' + str(PORT) + '/health'
 
 def ready():
     try:
         with urllib.request.urlopen(HEALTH, timeout=1) as response:
             value = json.loads(response.read(8192))
-            return value.get('application') == 'fde-desk-easyclaw'
+            return (value.get('application') == 'fde-desk-easyclaw'
+                    and value.get('applicationId', '') == PROFILE.get('applicationId', ''))
     except Exception:
         return False
 

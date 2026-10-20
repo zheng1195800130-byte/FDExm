@@ -28,3 +28,16 @@ node scripts/provision-easyclaw-owner.cjs
 ```
 
 授权脚本要求已有档案、已登录的当前宿主账号；如果已有授权属于另一个账号，会停止，不自动改绑或替换数据。
+
+企业版使用不同账号、同时保留原授权时，为该安装建立独立档案：
+
+```powershell
+node scripts/sync-easyclaw.cjs --app-root <应用目录> --isolated-account --port <独立服务端口>
+node scripts/provision-easyclaw-owner.cjs --app-root <应用目录> --state-root <当前宿主状态目录>
+```
+
+该安装的数据和授权保存在 `%LOCALAPPDATA%\FDE Desk\accounts\<应用标识>\data`。首次进入为空，不读取或复制原安装的资料、模型密钥或设置；后续更新沿用该独立档案。授权脚本不会改绑已有授权，也不会自动认领缺少授权的已有档案。运行时仍由正式 UserInfo 验证账号，不将身份文件作为登录凭据。
+
+企业版的受管页面通过内联脚本提供正式登录桥。宿主入口在该脚本执行后恢复与原桌面页面一致的严格内容安全策略；不增加 `unsafe-inline`，独立桌面入口保留原静态策略。
+
+同步时为内容过滤模块生成字节相同的 `.js` 地址，适配受管预览的脚本类型。空档案首次进入显示关联项目入口，不要求已有项目。

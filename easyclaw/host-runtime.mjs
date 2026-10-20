@@ -1,17 +1,38 @@
 export const SERVICE_ORIGIN='http://127.0.0.1:35639';
+export const PAGE_POLICY="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'";
+export function installHostPolicy(document){
+  // The managed iframe injects its trusted bridge as an inline head script.
+  // Modules run after parsing, so enforce the original policy after that bridge.
+  if(document.querySelector('meta[http-equiv="Content-Security-Policy"]'))return;
+  const meta=document.createElement('meta');meta.httpEquiv='Content-Security-Policy';meta.content=PAGE_POLICY;document.head.append(meta);
+}
+export function companionReady(response){
+  let value=response;
+  for(let depth=0;depth<8;depth++){
+    if(typeof value==='string'){try{value=JSON.parse(value);}catch{break;}continue;}
+    if(!value||typeof value!=='object')break;
+    if(value.result===false||value.ok===false||value.success===false)throw new Error(typeof value.error==='string'?value.error:value.error?.message||'本地工作服务启动失败，请重新打开应用。');
+    if(value.ready===true)return true;
+    if(value.data!==undefined)value=value.data;
+    else if(value.result&&typeof value.result==='object')value=value.result;
+    else if(typeof value.stdout==='string')value=value.stdout;
+    else break;
+  }
+  throw new Error('本地工作服务未启动，请重新打开应用。');
+}
 function dataOf(response){
   let value=response?.body??response?.data??response;
   if(typeof value==='string'){try{value=JSON.parse(value);}catch{throw new Error('本地服务返回了无效结果。');}}
   if(value?.ok!==true)throw Object.assign(new Error(typeof value?.error==='string'?value.error:value?.error?.message||'操作未完成，请重试。'),{status:response?.status||value?.status});
   return value.value;
 }
-export function createEasyClawRuntime(scope=window,{onLocked=()=>{}}={}){
+export function createEasyClawRuntime(scope=window,{onLocked=()=>{},serviceOrigin=SERVICE_ORIGIN}={}){
   const listeners=new Set();let connected=false,revision=-1,day='',polling=false,timer;
   const notify=event=>{for(const callback of listeners)callback(event);};
   async function send(action,payload={}){
     const auth=scope.easyclawAuth;
     if(!auth?.request)throw new Error('请在 EasyClaw 本地应用中打开工作台。');
-    try{return dataOf(await auth.request({url:SERVICE_ORIGIN+'/api',method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload}),timeoutMs:30000,mode:'ticket'}));}
+    try{return dataOf(await auth.request({url:serviceOrigin+'/api',method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,payload}),timeoutMs:30000,mode:'ticket'}));}
     catch(error){
       if(connected&&(!error.status||[401,403,503].includes(error.status))){connected=false;notify({accessDenied:true});onLocked(error.message);}
       throw error;
@@ -34,9 +55,7 @@ export function createEasyClawRuntime(scope=window,{onLocked=()=>{}}={}){
     if(session?.authenticated!==true||!session.profile)throw new Error('请验证当前 EasyClaw 账号。');
     const run=scope.EasyClawPython?.run;
     if(!run)throw new Error('本机运行桥尚未就绪，请重新打开应用。');
-    let launch=await run('scripts/launch-companion.py','start',{}, {timeoutMs:30000});
-    for(let depth=0;depth<4&&launch?.data&&!launch.ready;depth++)launch=launch.data;
-    if(!launch?.ready)throw new Error('本地工作服务未启动，请重新打开应用。');
+    companionReady(await run('scripts/launch-companion.py','start',{}, {timeoutMs:30000}));
     const value=await call('bridge:events');revision=value.revision;day=value.day;connected=true;
     if(!timer)timer=scope.setInterval(async()=>{
       if(!connected||polling)return;polling=true;

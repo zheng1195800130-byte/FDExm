@@ -26,10 +26,13 @@ const { RequirementService } = require('../src/core/requirement-service.cjs');
 const { DailyDesk, localDate, carryover } = require('../src/core/daily-desk.cjs');
 const requirementSummarizer = require('../src/core/requirement-summarizer.cjs');
 const {EasyClawAccess,startLocalBridge}=require('./easyclaw-access.cjs');
+const {readProfile,profileDirectory}=require('./easyclaw-profile.cjs');
 const EASYCLAW=process.argv.includes('--easyclaw-host')||(app.isPackaged&&fs.existsSync(path.join(process.resourcesPath,'fde-easyclaw.json')));
+const EASYCLAW_PROFILE=readProfile(EASYCLAW&&app.isPackaged?process.resourcesPath:null);
 const ROOT = path.resolve(__dirname, '..');
 const TRUSTED_PAGES = new Map(['index.html', 'float.html', 'ball.html', 'memo.html'].map(name => [name, pathToFileURL(path.join(ROOT, 'src/ui', name)).href]));
-const DATA = prepareDataDirectory({ root: ROOT, isPackaged: app.isPackaged, execPath: process.execPath });
+const DATA = EASYCLAW_PROFILE.applicationId&&!(process.env.FDE_TEST==='1'&&process.env.FDE_DATA_DIR)
+  ?profileDirectory(EASYCLAW_PROFILE.applicationId):prepareDataDirectory({ root: ROOT, isPackaged: app.isPackaged, execPath: process.execPath });
 fs.mkdirSync(path.join(DATA, 'runtime'), { recursive: true });
 const RUNTIME=path.join(DATA,EASYCLAW?'runtime-easyclaw':'runtime');
 app.setPath('userData', RUNTIME);
@@ -458,7 +461,7 @@ else {
     dayTimer=setInterval(checkDay,1000);dayTimer.unref();
     require('electron').powerMonitor.on('resume',()=>{checkDay();refreshWorkbench();});
     if(EASYCLAW){
-      bridgeServer=await startLocalBridge({access:easyclawAccess,version:app.getVersion(),port:process.env.FDE_TEST==='1'&&process.env.FDE_EASYCLAW_PORT!==undefined?Number(process.env.FDE_EASYCLAW_PORT):35639,events:()=>({revision:bridgeRevision,day:lastLocalDay}),onAuthorized:()=>{if(!nativeUnlocked){nativeUnlocked=true;broadcast({accessRestored:true});}},dispatch:(action,payload)=>{
+      bridgeServer=await startLocalBridge({access:easyclawAccess,version:app.getVersion(),applicationId:EASYCLAW_PROFILE.applicationId,port:process.env.FDE_TEST==='1'&&process.env.FDE_EASYCLAW_PORT!==undefined?Number(process.env.FDE_EASYCLAW_PORT):EASYCLAW_PROFILE.port,events:()=>({revision:bridgeRevision,day:lastLocalDay}),onAuthorized:()=>{if(!nativeUnlocked){nativeUnlocked=true;broadcast({accessRestored:true});}},dispatch:(action,payload)=>{
         if(action==='window:compact'){showPanel();return true;}
         return executeRequest({action,payload},main.webContents);
       }});

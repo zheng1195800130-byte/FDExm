@@ -77,7 +77,7 @@ async function refresh(renderView=true){
   if(sequence!==refreshSequence)return;
   state=next;
   const p=project();if(priorProjectId&&p?.id!==priorProjectId){fileQuery='';fileKind='';fileDate='';fileGroup='';fileTag='';}
-  if(p?.id===priorProjectId)for(const [date,versions] of Object.entries(priorProject.dailyHistory||{})){const key=dailyVersionKey(p,date);if(dailyVersionSelections.get(key)===versions.at(-1)?.id&&p.dailyHistory?.[date]?.at(-1)?.id!==versions.at(-1)?.id)dailyVersionSelections.delete(key);}
+  if(p&&priorProject&&p.id===priorProjectId)for(const [date,versions] of Object.entries(priorProject.dailyHistory||{})){const key=dailyVersionKey(p,date);if(dailyVersionSelections.get(key)===versions.at(-1)?.id&&p.dailyHistory?.[date]?.at(-1)?.id!==versions.at(-1)?.id)dailyVersionSelections.delete(key);}
   syncCodexDate(p);
   $('project-select').innerHTML=state.projects.length ? state.projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join(''):'<option value="">'+(state.archivedProjects?.length?'暂无关注项目':'尚未关联项目')+'</option>';
   if(p) $('project-select').value=p.id;

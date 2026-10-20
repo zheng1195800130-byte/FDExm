@@ -21,3 +21,16 @@ test('真实宿主请求上限内拼接大档案，等待完成期间继续保�
  };
  assert.equal(await r.request('state'),'历史日报');r.dispose();
 });
+
+test('宿主桥加载后恢复原脚本策略，重复初始化不插入宽松策略',async()=>{
+ const {installHostPolicy,PAGE_POLICY}=await import('../easyclaw/host-runtime.mjs');let saved;
+ const document={querySelector:()=>saved,createElement:()=>({}),head:{append:meta=>{saved=meta;}}};
+ installHostPolicy(document);assert.equal(saved.httpEquiv,'Content-Security-Policy');assert.equal(saved.content,PAGE_POLICY);assert.ok(!PAGE_POLICY.includes('unsafe-inline'));const first=saved;installHostPolicy(document);assert.equal(saved,first);
+});
+test('独立安装仅通过正式账号桥调用该安装的服务地址',async()=>{
+ const f=await fixture(),r=f.createEasyClawRuntime(f.scope,{serviceOrigin:'http://127.0.0.1:35640'});await r.connect();assert.equal(f.requests[0].url,'http://127.0.0.1:35640/api');r.dispose();
+});
+test('启动结果支持宿主 JSON 文本和数据封装，明确失败不冒充就绪',async()=>{
+ const {companionReady}=await import('../easyclaw/host-runtime.mjs');assert.equal(companionReady({result:true,data:JSON.stringify({result:true,data:{ready:true}})}),true);assert.equal(companionReady({data:{stdout:'{"result":true,"data":{"ready":true}}'}}),true);
+ assert.throws(()=>companionReady({result:false,error:'脚本未找到',data:{ready:true}}),/脚本未找到/);assert.throws(()=>companionReady({data:'not-json'}),/未启动/);
+});

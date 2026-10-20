@@ -36,7 +36,7 @@ class EasyClawAccess{
     this.cache={key,account,expires:this.now()+5000};this.authorizedUntil=this.now()+20000;return true;
   }
 }
-function startLocalBridge({access,dispatch,events,version,onAuthorized=()=>{},port=35639}){
+function startLocalBridge({access,dispatch,events,version,applicationId='',onAuthorized=()=>{},port=35639}){
   // Host requests have a 30 s timeout and 2 MiB response ceiling. Each job and
   // chunk is independently authorized; revocation invalidates pending results.
   const jobs=new Map(),chunkSize=120000;
@@ -65,7 +65,7 @@ function startLocalBridge({access,dispatch,events,version,onAuthorized=()=>{},po
   }
   const server=http.createServer(async(req,res)=>{
     const send=(status,value)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(JSON.stringify(value));};
-    if(req.method==='GET'&&req.url==='/health'){send(200,{application:'fde-desk-easyclaw',version});return;}
+    if(req.method==='GET'&&req.url==='/health'){send(200,{application:'fde-desk-easyclaw',version,...(applicationId?{applicationId}:{})});return;}
     if(req.method!=='POST'||req.url!=='/api'){send(404,{ok:false,error:'请求不存在'});return;}
     try{
       await access.authorize(req.headers.authorization);onAuthorized();
