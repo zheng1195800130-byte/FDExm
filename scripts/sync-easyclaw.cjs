@@ -2,6 +2,7 @@
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const {ORIGIN}=require('../desktop/easyclaw-access.cjs');
 const {readProfile}=require('../desktop/easyclaw-profile.cjs');
+const {unpackNativeApp,updatePublishIgnore}=require('./easyclaw-publish.cjs');
 const ROOT=path.resolve(__dirname,'..'),target=process.argv[process.argv.indexOf('--app-root')+1];
 if(!process.argv.includes('--app-root')||!target)throw new Error('必须指定已由宿主正式创建的应用目录');
 const dest=fs.realpathSync(target),manifestPath=path.join(dest,'app.json'),manifest=JSON.parse(fs.readFileSync(manifestPath,'utf8'));
@@ -25,6 +26,10 @@ function copyTree(from,to){
   if(fs.statSync(from).isDirectory()){fs.mkdirSync(to,{recursive:true});for(const entry of fs.readdirSync(from))copyTree(path.join(from,entry),path.join(to,entry));}
   else{fs.mkdirSync(path.dirname(to),{recursive:true});fs.copyFileSync(from,to);}
 }
+function copyNative(from,to){
+  if(fs.statSync(from).isDirectory()){fs.mkdirSync(to,{recursive:true});for(const entry of fs.readdirSync(from))copyNative(path.join(from,entry),path.join(to,entry));}
+  else if(path.resolve(from)!==path.resolve(archive)){fs.mkdirSync(path.dirname(to),{recursive:true});fs.copyFileSync(from,to);}
+}
 const copy=(from,to)=>copyTree(path.join(ROOT,from),path.join(dest,to));
 copy('src/ui','client/src/ui');copy('node_modules/marked','client/node_modules/marked');copy('node_modules/dompurify','client/node_modules/dompurify');
 // Managed local previews serve .mjs as binary. Keep the sanitizer bytes intact
@@ -37,7 +42,9 @@ write('src/deployment.js','export const SERVICE_ORIGIN='+JSON.stringify(serviceO
 write('tests/easyclaw-access.test.cjs',fs.readFileSync(path.join(ROOT,'tests/easyclaw-access.test.cjs'),'utf8').replace("require('../desktop/easyclaw-access.cjs')","require('../backend/desktop/easyclaw-access.cjs')"));
 write('tests/easyclaw-host.test.cjs',fs.readFileSync(path.join(ROOT,'tests/easyclaw-host.test.cjs'),'utf8').replaceAll("import('../easyclaw/host-runtime.mjs')","import('../src/easyclaw-runtime.js')"));
 write('tests/easyclaw-profile.test.cjs',fs.readFileSync(path.join(ROOT,'tests/easyclaw-profile.test.cjs'),'utf8').replaceAll("require('../desktop/","require('../backend/desktop/"));
-for(const entry of fs.readdirSync(stage))if(entry!=='data')copyTree(path.join(stage,entry),path.join(dest,'native',entry));
+for(const entry of fs.readdirSync(stage))if(entry!=='data')copyNative(path.join(stage,entry),path.join(dest,'native',entry));
+unpackNativeApp({archive,resources:path.join(dest,'native/resources'),backupDirectory:path.resolve(ROOT,'../.fde-build/backups',manifest.id)});
+updatePublishIgnore(dest);
 json('native/resources/fde-easyclaw.json',{edition:'easyclaw',ownerAuthorizationRequired:true,...(isolated?{applicationId:manifest.id,port}:{})});
 let html=fs.readFileSync(path.join(ROOT,'src/ui/index.html'),'utf8').replace('href="styles.css"','href="client/src/ui/styles.css"');
 // The managed preview injects its inline bridge at the end of <head>.
@@ -60,6 +67,6 @@ for(const capability of contract.capabilities)if(['manage_requirements','manage_
 }
 json('application-capabilities.json',contract);
 write('.gitignore','.git\n/.easyclaw-runtime/\n/native/\n/client/node_modules/\nnode_modules/\n.test-tmp/\n*.log\n');
-write('README.md','# FDE Desk 本地应用\n\n从 EasyClaw 的本地应用列表打开 FDE Desk，使用当前账号验证后访问个人档案。资料、需求、日报、备忘录、模型密钥和账号授权保存在 Windows 本地应用数据目录的 '+(isolated?'FDE Desk/accounts/<应用标识>/data。当前安装使用独立档案，原有安装的数据和授权保留':'FDE Desk/data')+'，应用目录只包含程序。\n\n“打开悬浮框”启动独立原生窗口，EasyClaw 页面保留。原生窗口依赖宿主持续提供账号授权；授权失效或账号切换后锁定内容。普通浏览器仅显示访问提示，不读取本机档案。\n\n原生程序仅支持 Windows。更新应用只替换程序，不覆盖个人数据。native 与 client/node_modules 是生成的运行产物，维护时通过原项目的构建和同步脚本生成；用户运行无需 EasyClawDev (NEXT)。\n');
+write('README.md','# FDE Desk 本地应用\n\n从 EasyClaw 的本地应用列表打开 FDE Desk，使用当前账号验证后访问个人档案。资料、需求、日报、备忘录、模型密钥和账号授权保存在 Windows 本地应用数据目录的 '+(isolated?'FDE Desk/accounts/<应用标识>/data。当前安装使用独立档案，原有安装的数据和授权保留':'FDE Desk/data')+'，应用目录只包含程序。\n\n“打开悬浮框”启动独立原生窗口，EasyClaw 页面保留。原生窗口依赖宿主持续提供账号授权；授权失效或账号切换后锁定内容。普通浏览器仅显示访问提示，不读取本机档案。\n\n原生程序仅支持 Windows。更新应用只替换程序，不覆盖个人数据。native 与 client/node_modules 是生成的运行产物，维护时通过原项目的构建和同步脚本生成；用户运行无需 EasyClawDev (NEXT)。发布使用 native/resources/app 目录形式，.easyclawignore 保留前端和原生运行依赖，排除个人档案、授权文件和密钥。\n');
 for(const f of protectedFiles)if(hash(path.join(dest,f))!==before[f])throw new Error('平台运行文件被改动：'+f);
 console.log(JSON.stringify({ok:true,id:manifest.id,protectedFilesUnchanged:true,personalDataCopied:false}));
