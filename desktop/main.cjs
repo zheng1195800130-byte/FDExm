@@ -8,6 +8,7 @@ const { promisify } = require('node:util');
 const { randomUUID } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { Store } = require('../src/core/store.cjs');
+const workRecordExport = require('../src/core/work-record-export.cjs');
 const materialTags=require('../src/core/material-tags.cjs');
 const { displayProject, displaySettings, DEFAULT_IGNORE_RULES } = require('../src/core/file-display.cjs');
 const codex = require('../src/core/codex.cjs');
@@ -370,6 +371,13 @@ async function dispatch(action, p, sender) {
     case 'requirement:filter': return store.setRequirementFilter(p.id, p.after, p.mode);
     case 'record:save': return store.upsertRecord(p.id, p.input);
     case 'record:remove': return store.removeRecord(p.id, p.recordId);
+    case 'record:export': {
+      const proj=project(p.id),records=workRecordExport.selectRecords(proj,p),bytes=workRecordExport.createWorkbook(records);
+      const result=await dialog.showSaveDialog(BrowserWindow.fromWebContents(sender),{title:'导出工作记录',defaultPath:workRecordExport.exportName(proj,p),filters:[{name:'Excel 工作簿',extensions:['xlsx']}]});
+      if(result.canceled||!result.filePath)return null;
+      if(!accessAllowed())throw Error('账号验证已失效，请重新验证。');
+      await fsp.writeFile(result.filePath,bytes);return result.filePath;
+    }
     case 'report:generate': return store.generateReport(p.id, p.date);
     case 'report:save': return store.saveReport(p.id, p.date, p.text);
     case 'report:export': {
@@ -422,7 +430,7 @@ async function executeRequest(input,sender){
   if (!direct) queue = promise.catch(() => {});
   const value = await promise;
   if(!accessAllowed())throw new Error('账号验证已失效，请重新验证。');
-  if (/^(project:|file:(add|paste|update)|requirement:|record:|report:save|cycle:|delivery:|codex:bind|model:save|summary:rules-save)/.test(input.action)) broadcast();
+  if (/^(project:|file:(add|paste|update)|requirement:|record:(save|remove)|report:save|cycle:|delivery:|codex:bind|model:save|summary:rules-save)/.test(input.action)) broadcast();
   if (/^memo:(save|paste|add-image|add-images|remove-image)$/.test(input.action)) broadcast({ memoUpdated: input.payload?.id });
   return value;
 }

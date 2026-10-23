@@ -31,7 +31,7 @@ async function run(){
     });
   }
   async function route(name){await page.locator(`[data-route="${name}"]`).click();await page.locator(name==='records'?'#record-date':name==='reports'?'#report-date':'#requirement-after').waitFor();}
-  async function date(id,value){await page.locator('#'+id).fill(value);await page.locator('#'+id).dispatchEvent('change');}
+  async function date(id,value){await page.locator('#'+id).fill(value);await page.locator('#'+id).dispatchEvent('change');if(id==='record-date'){await page.locator('#record-end-date').fill(value);await page.locator('#record-end-date').dispatchEvent('change');}}
   function addWork(title){const writer=new Store(data);writer.upsertRecord(p.id,{date:DATE,title,confirmed:true});}
   try{
     await launch();await route('records');await date('record-date',DATE);check(await page.locator('.record-card').count()===0,'初始没有昨天的记录');

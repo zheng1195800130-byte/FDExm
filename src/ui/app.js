@@ -6,6 +6,10 @@ const navigation = [ ['overview','项目概览','overview'], ['files','资料库
 let state={projects:[],settings:{}}, route='overview', fileQuery='', fileKind='', fileDate='', fileGroup='', recordDate=today(), reportDate=today(), codexDate=today(), codexResult=null;
 let dailyBusy=false, uiDay=today();
 let organizeMode='append';
+let recordEndDate=recordDate,recordExporting=false;
+const recordSingleDate=()=>recordDate&&recordDate===recordEndDate?recordDate:'';
+const recordRangeError=()=>recordDate&&recordEndDate&&recordDate>recordEndDate?'开始日期不能晚于结束日期':'';
+function recordQuery(p){const date=recordSingleDate();return {startDate:recordDate,endDate:recordEndDate,versionId:date?dailyVersion(p,date)?.id||'':''};}
 const dailyVersionSelections=new Map();
 const dailyVersionKey=(p,date)=>`${p.id}:${date}`;
 function dailyVersion(p,date){const versions=p.dailyHistory?.[date]||[],selected=dailyVersionSelections.get(dailyVersionKey(p,date));return versions.find(row=>row.id===selected)||versions.at(-1);}
@@ -212,18 +216,19 @@ async function organizeDaily(all=false,date=today()){
   const p=project();if(!p||dailyBusy)return;
   if(!all&&!p.codex?.threadId){await bindCodex();return;}
   dailyBusy=true;resetOriginalConversation();render();
-  try{const result=await request(all?'daily:all':'daily:run',{id:p.id,date,mode:organizeMode});const errors=result.results?.filter(r=>r.error)||[];if(!all&&!result.savedVerified)throw new Error('整理结果尚未通过保存核验，请更新程序或重试。');dailyVersionSelections.delete(dailyVersionKey(p,date));if(!errors.some(r=>r.id===p.id)){recordDate=reportDate=codexDate=date;}await refresh();const message=all?`已检查 ${result.results.length} 个项目，成果已保存本地`:result.skipped?result.message:result.workCount?`已保存并核验：${result.workCount} 项工作记录${result.reportSaved?'及日报':''}`:result.unfinishedCount?'已保存项目和需求；当天对话还在进行，回复结束后可再次整理':'已保存项目和需求；当天暂无可提炼的工作内容';const pending=result.pending?`，还有 ${result.pending} 项待整理`:'';notify(errors.length?errors.map(r=>`${r.name}：${r.error}`).join('；'):result.archiveWarning||message+pending,!!errors.length||!!result.archiveWarning);}
+  try{const result=await request(all?'daily:all':'daily:run',{id:p.id,date,mode:organizeMode});const errors=result.results?.filter(r=>r.error)||[];if(!all&&!result.savedVerified)throw new Error('整理结果尚未通过保存核验，请更新程序或重试。');dailyVersionSelections.delete(dailyVersionKey(p,date));if(!errors.some(r=>r.id===p.id)){recordDate=recordEndDate=reportDate=codexDate=date;}await refresh();const message=all?`已检查 ${result.results.length} 个项目，成果已保存本地`:result.skipped?result.message:result.workCount?`已保存并核验：${result.workCount} 项工作记录${result.reportSaved?'及日报':''}`:result.unfinishedCount?'已保存项目和需求；当天对话还在进行，回复结束后可再次整理':'已保存项目和需求；当天暂无可提炼的工作内容';const pending=result.pending?`，还有 ${result.pending} 项待整理`:'';notify(errors.length?errors.map(r=>`${r.name}：${r.error}`).join('；'):result.archiveWarning||message+pending,!!errors.length||!!result.archiveWarning);}
   finally{dailyBusy=false;render();}
 }
 function historyDates(p){return [...new Set([...(p.records||[]).map(item=>item.date),...(p.reports||[]).map(item=>item.date),...Object.keys(p.dailyHistory||{}),...(p.codex?.dailySummaries||[]).map(item=>item.date),...Object.entries(p.dailyDesk?.days||{}).filter(([,day])=>day.digest?.reportText).map(([date])=>date)])].filter(validDate).sort((a,b)=>b.localeCompare(a));}
 function historySelect(id,dates,selected){return dates.length?`<select id="${id}" aria-label="选择历史日期"><option value="">历史日期</option>${dates.map(date=>`<option value="${esc(date)}" ${date===selected?'selected':''}>${esc(date)}</option>`).join('')}</select>`:'';}
 function renderRecords(p){
-  const original=p,readonly=oldDailyVersion(p,recordDate);if(recordDate)p=dailyViewProject(p,recordDate);
-  const records=sortedRecords(p).filter(r=>!recordDate||r.date===recordDate), groups=Map.groupBy?Map.groupBy(records,r=>r.date):records.reduce((m,r)=>(m.has(r.date)||m.set(r.date,[]),m.get(r.date).push(r),m),new Map());
-  $('workspace').innerHTML=heading('WORK LOG','工作记录','',actionButton('new-record','记录工作','plus','','primary'))+
-  `<div class="toolbar records-toolbar"><div class="filters"><input type="date" id="record-date" value="${esc(recordDate)}" aria-label="按工作日期筛选">${historySelect('record-history',historyDates(p),recordDate)}${recordDate?'<button class="btn small" data-action="clear-record-date">全部日期</button>':''}</div></div>`+
+  const original=p,date=recordSingleDate(),readonly=!!date&&oldDailyVersion(p,date),error=recordRangeError();if(date)p=dailyViewProject(p,date);
+  const records=error?[]:sortedRecords(p).filter(r=>(!recordDate||r.date>=recordDate)&&(!recordEndDate||r.date<=recordEndDate)), groups=Map.groupBy?Map.groupBy(records,r=>r.date):records.reduce((m,r)=>(m.has(r.date)||m.set(r.date,[]),m.get(r.date).push(r),m),new Map());
+  $('workspace').innerHTML=heading('WORK LOG','工作记录','',actionButton('export-records',recordExporting?'导出中…':'导出表格','upload',`id="export-records" ${error||!records.length||recordExporting?'disabled':''} aria-busy="${recordExporting}"`)+actionButton('new-record','记录工作','plus','','primary'))+
+  `<div class="toolbar records-toolbar"><div class="filters"><label class="record-date-field" for="record-date">开始日期<input type="date" id="record-date" value="${esc(recordDate)}" aria-label="开始日期" ${error?'aria-invalid="true" aria-describedby="record-range-error"':''}></label><span class="record-date-separator" aria-hidden="true">至</span><label class="record-date-field" for="record-end-date">结束日期<input type="date" id="record-end-date" value="${esc(recordEndDate)}" aria-label="结束日期" ${error?'aria-invalid="true" aria-describedby="record-range-error"':''}></label>${historySelect('record-history',historyDates(original),date)}${recordDate||recordEndDate?'<button class="btn small" data-action="clear-record-date">全部日期</button>':''}</div></div>${error?`<p class="record-range-error" id="record-range-error" role="alert">${esc(error)}</p>`:''}`+
   (records.length?[...groups].map(([date,items])=>`<div class="records-day"><h2>${esc(date)}</h2><span>${items.length} 项工作记录</span></div>${items.map(r=>`<article class="record-card"><div class="record-head"><div><div class="item-key">${esc(r.issueKey||'未设置事项编号')}</div><h3>${esc(r.title)}</h3></div><div class="actions">${badge(r.status)}<button class="icon-btn" data-action="edit-record" data-item="${esc(r.id)}" aria-label="编辑 ${esc(r.title)}">${icon('edit',16)}</button></div></div><div class="record-columns"><div>${r.cause?`<div class="record-field"><div class="data-label">原因</div><div class="data-value">${esc(r.cause)}</div></div>`:''}<div class="record-field"><div class="data-label">处理</div><div class="data-value">${esc(r.action||'尚未填写')}</div></div></div><div class="record-field"><div class="data-label">结果</div><div class="data-value">${esc(r.result||'尚未明确')}</div></div></div>${r.attachments?.length?`<div class="attachment-line">附件：${esc(r.attachments.map(sourceText).join('\n'))}</div>`:''}<div class="record-footer"><div class="confirmation ${r.confirmed?'':'unconfirmed'}">${icon(r.confirmed?'check':'clock',13)}${automaticRecord(r)?'自动整理 · 可编辑':r.confirmed?'已核对 · 可用于日报':r.summaryOrigin?'已手动调整 · 待核对':'手工草稿 · 确认后可用于日报'}</div>${r.sourceRef?`<span class="small-text muted record-source">来源：${esc(sourceText(r.sourceRef))}</span>`:''}</div></article>`).join('')}`).join(''):empty('今天的有效工作，从这里留下',recordDate?'所选日期暂无记录。':'记下问题、原因、有效处理和结果。长对话留在 Codex，摘要留在这里。',actionButton('new-record','添加工作记录','plus','','primary'),'records'));
-  $('record-history')?.insertAdjacentHTML('afterend',versionSelect(original,recordDate));
+  if(date)$('record-history')?.insertAdjacentHTML('afterend',versionSelect(original,date));
+  if(error)$('workspace').querySelector('.empty-state')?.remove();
   if(readonly)for(const button of $('workspace').querySelectorAll('[data-action="edit-record"],[data-action="new-record"]')){button.disabled=true;button.title='正在查看历史版本。';}
 }
 function reportKey(p,date=reportDate){return `${p.id}:${date}${oldDailyVersion(p,date)?':'+dailyVersion(p,date).id:''}`;}
@@ -532,16 +537,17 @@ async function handleAction(action,target){
     case 'edit-requirement':requirementForm(p.requirements.find(r=>r.id===target.dataset.item));break;
     case 'delete-requirement':await request('requirement:remove',{id,requirementId:$('modal-form').dataset.item});closeForm();await refresh();notify('需求已删除');break;
     case 'new-record':recordForm();break;
-    case 'edit-record':if(oldDailyVersion(p,recordDate))throw new Error('历史版本保留原样，请切换到最新版本。');recordForm(dailyViewProject(p,recordDate).records.find(r=>r.id===target.dataset.item));break;
+    case 'edit-record':{const date=recordSingleDate();if(date&&oldDailyVersion(p,date))throw new Error('历史版本保留原样，请切换到最新版本。');recordForm((date?dailyViewProject(p,date):p).records.find(r=>r.id===target.dataset.item));break;}
     case 'delete-record':await request('record:remove',{id,recordId:$('modal-form').dataset.item});closeForm();await refresh();notify('工作记录已删除');break;
-    case 'clear-record-date':recordDate='';await refresh();break;
+    case 'clear-record-date':recordDate='';recordEndDate='';await refresh();break;
+    case 'export-records':{if(recordExporting)break;const query=recordQuery(p);recordExporting=true;renderRecords(p);try{const output=await request('record:export',{id,...query});if(output)notify('工作记录表格已导出');}finally{recordExporting=false;if(route==='records'&&project())renderRecords(project());}break;}
     case 'new-cycle':showForm('新建交付周期','当前周期结束后，新的明确交付目标进入下一周期。',field('name','周期名称','',{required:true,placeholder:'例如：第二阶段 / 报表功能交付'}),async values=>{await request('cycle:start',{id,name:values.name});await refresh();notify('新周期已建立');});break;
     case 'new-delivery':deliveryForm();break;
     case 'save-report':{if(oldDailyVersion(p,reportDate))throw new Error('历史版本保留原样，请切换到最新版本。');const date=reportDate,key=reportKey(p,date),text=currentReportText(p,date);await request('report:save',{id,date,text});reportDrafts.delete(key);reportGenerated.delete(key);await refresh();notify('日报已保存');break;}
     case 'copy-report':{const text=currentReportText(p);if(!text.trim())throw new Error('日报内容为空，请先生成或填写。');await request('clipboard:text',{text});notify('日报已复制');break;}
     case 'export-report':{const date=reportDate,text=currentReportText(p,date);if(!text.trim())throw new Error('日报内容为空，请先生成或填写。');const output=await request('report:export',{id,date,text});if(output)notify('日报已导出');break;}
     case 'edit-report':case 'preview-report':{const key=reportKey(p),text=currentReportText(p);if(text!==reportText(p))reportDrafts.set(key,text);reportModes.set(key,action==='edit-report'?'edit':'preview');renderReports(p);(action==='edit-report'?$('report-text'):$('report-preview-mode'))?.focus({preventScroll:true});break;}
-    case 'show-day-records':recordDate=reportDate;route='records';await refresh();break;
+    case 'show-day-records':recordDate=reportDate;recordEndDate=reportDate;route='records';await refresh();break;
     case 'open-report':reportDate=target.dataset.date;await refresh();break;
     case 'bind-codex':await bindCodex();break;
     case 'show-codex-date':selectCodexDate(target.dataset.date);await refresh();break;
@@ -596,10 +602,11 @@ document.addEventListener('change',async event=>{
   if(el.id==='organize-mode'){organizeMode=el.value;return;}
   if(el.id==='daily-version'){dailyVersionSelections.set(dailyVersionKey(project(),el.dataset.date),el.value);render();return;}
   if(el.id==='requirement-after'){try{await saveRequirementFilter(el.value);}catch(error){notify(error.message||String(error),true);}}
-  if(el.id==='record-history'){if(el.value){recordDate=el.value;await refreshHistoryView();}return;}
+  if(el.id==='record-history'){if(el.value){recordDate=el.value;recordEndDate=el.value;await refreshHistoryView();}return;}
   if(el.id==='report-history'){if(el.value){reportDate=el.value;await refreshHistoryView();}return;}
   if(el.id==='requirement-history'){if(el.value){try{await saveRequirementFilter(el.value);}catch(error){notify(error.message||String(error),true);}}return;}
   if(el.id==='record-date'){recordDate=el.value;await refreshHistoryView('record-date');}
+  if(el.id==='record-end-date'){recordEndDate=el.value;await refreshHistoryView('record-end-date');}
   if(el.id==='report-date'){reportDate=el.value||today();await refreshHistoryView('report-date');}
   if(el.id==='codex-date'||el.id==='codex-history'){if(!el.value)return;selectCodexDate(el.value);await refreshHistoryView('codex-date');}
 });
@@ -625,7 +632,7 @@ function clearPrivateView(){
   $('workspace').replaceChildren();$('project-select').replaceChildren();$('breadcrumb-project').textContent='个人档案已锁定';
   for(const id of ['form-dialog','preview-dialog']){$(id)?.close();$(id)?.firstElementChild?.replaceChildren();}
 }
-window.fde?.onChange(event=>{if(event?.accessDenied){clearTimeout(changeTimer);refreshSequence++;clearPrivateView();return;}if(event?.warning)notify(event.warning,true);if(event?.dayChanged){updateTodayLabel();const previous=uiDay;uiDay=event.dayChanged;if(reportDate===previous)reportDate=uiDay;if(codexDate===previous){codexDate=uiDay;codexDateSelections.delete(codexContext);}if(recordDate===previous)recordDate=uiDay;}if(event?.codexUpdated===project()?.id)codexUpdated=true;clearTimeout(changeTimer);changeTimer=setTimeout(async()=>{try{await refresh(!$('form-dialog').open&&!$('preview-dialog').open);}catch(error){notify(error.message,true);}},150);});
+window.fde?.onChange(event=>{if(event?.accessDenied){clearTimeout(changeTimer);refreshSequence++;clearPrivateView();return;}if(event?.warning)notify(event.warning,true);if(event?.dayChanged){updateTodayLabel();const previous=uiDay;uiDay=event.dayChanged;if(reportDate===previous)reportDate=uiDay;if(codexDate===previous){codexDate=uiDay;codexDateSelections.delete(codexContext);}if(recordDate===previous&&recordEndDate===previous){recordDate=uiDay;recordEndDate=uiDay;}}if(event?.codexUpdated===project()?.id)codexUpdated=true;clearTimeout(changeTimer);changeTimer=setTimeout(async()=>{try{await refresh(!$('form-dialog').open&&!$('preview-dialog').open);}catch(error){notify(error.message,true);}},150);});
 try{await refresh();}catch(error){$('workspace').innerHTML=empty('工作台暂时无法打开',error.message,actionButton('reload','重试','refresh'));document.addEventListener('click',event=>{if(event.target.closest('[data-action=reload]'))location.reload();});}
 
 

@@ -1,6 +1,6 @@
 {
   "name": "fde-desk",
-  "version": "0.5.30",
+  "version": "0.5.31",
   "description": "个人 FDE 工作台：资料、需求、工作记录与项目进度",
   "private": true,
   "main": "desktop/main.cjs",
@@ -17,6 +17,7 @@
     "test:model-key-startup": "node scripts/model-key-startup-smoke.cjs",
     "test:rules": "node scripts/rules-smoke.cjs",
     "test:related": "node scripts/related-markdown-smoke.cjs",
+    "test:work-records": "node scripts/work-record-export-smoke.cjs",
     "test:history": "node scripts/history-smoke.cjs",
     "test:history-consistency": "node scripts/history-consistency-smoke.cjs",
     "test:history-project": "node scripts/history-project-audit.cjs",

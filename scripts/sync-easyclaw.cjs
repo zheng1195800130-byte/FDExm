@@ -65,6 +65,10 @@ for(const capability of contract.capabilities)if(['manage_requirements','manage_
   capability.logicRefs.push('backend/src/core/daily-history.cjs');
   capability.behavior.dailyHistory={timezone:'Asia/Shanghai',saveOnOrganize:true,modes:['append','replace'],readbackRequired:true,retainPreviousVersions:true,independentRevisionFiles:true,legacyRecovery:'preserve_existing_outputs_without_inventing_missing_versions'};
 }
+const recordCapability=contract.capabilities.find(item=>item.id==='manage_work_records');
+recordCapability.inputSchema.properties.action.enum.push('record:export');
+recordCapability.logicRefs.push('backend/src/core/work-record-export.cjs');
+recordCapability.behavior.workRecordExport={format:'xlsx',columns:['标题','原因','结果','处理'],inclusiveDateRange:true,singleDaySelectedVersion:true,historyUnchanged:true};
 json('application-capabilities.json',contract);
 write('.gitignore','.git\n/.easyclaw-runtime/\n/native/\n/client/node_modules/\nnode_modules/\n.test-tmp/\n*.log\n');
 write('README.md','# FDE Desk 本地应用\n\n从 EasyClaw 的本地应用列表打开 FDE Desk，使用当前账号验证后访问个人档案。资料、需求、日报、备忘录、模型密钥和账号授权保存在 Windows 本地应用数据目录的 '+(isolated?'FDE Desk/accounts/<应用标识>/data。当前安装使用独立档案，原有安装的数据和授权保留':'FDE Desk/data')+'，应用目录只包含程序。\n\n“打开悬浮框”启动独立原生窗口，EasyClaw 页面保留。原生窗口依赖宿主持续提供账号授权；授权失效或账号切换后锁定内容。普通浏览器仅显示访问提示，不读取本机档案。\n\n原生程序仅支持 Windows。更新应用只替换程序，不覆盖个人数据。native 与 client/node_modules 是生成的运行产物，维护时通过原项目的构建和同步脚本生成；用户运行无需 EasyClawDev (NEXT)。发布使用 native/resources/app 目录形式，.easyclawignore 保留前端和原生运行依赖，排除个人档案、授权文件和密钥。\n');

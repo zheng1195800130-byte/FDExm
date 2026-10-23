@@ -63,3 +63,7 @@
 #daily-version{max-width:100%;min-width:150px}
 #organize-mode{max-width:160px}
 .report-toolbar,.requirement-time-filter,.records-toolbar .filters{flex-wrap:wrap}
+
+/* Work record date range uses the existing toolbar controls. */
+.record-date-field{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;white-space:nowrap}.record-date-separator{color:var(--muted);font-size:12px}.record-range-error{color:var(--danger,#a63728);font-size:13px;margin:-6px 0 18px}.records-toolbar .filters{justify-content:flex-end}.record-date-field input[aria-invalid="true"]{border-color:var(--danger,#a63728)}
+@media(max-width:700px){.records-toolbar .filters{justify-content:flex-start}.record-date-field{flex-wrap:wrap}.record-date-separator{display:none}}
