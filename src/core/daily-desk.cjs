@@ -9,6 +9,7 @@ const {presetPrompt} = require('./summary-preset.cjs');
 const {materialOnly,organizedReport}=require('./daily-report.cjs');
 const {conversationText,parts,confirmationPoints,fileEvidence}=require('./daily-evidence.cjs');
 const {documentConfirmations}=require('./document-confirmations.cjs');
+const focus=require('./business-focus.cjs');
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const clean = (value, max = 2000) => String(value || '').replace(/\u0000/g, '').replace(/data:[^\s]+;base64,[a-z0-9+/=\r\n]+/gi, '[媒体内容省略]').replace(/[a-z0-9+/]{512,}={0,2}/gi, '[长编码省略]').trim().slice(0, max);
 const localDate = time => new Date(new Date(time).getTime() + 8 * 3600000).toISOString().slice(0, 10);
@@ -47,6 +48,7 @@ function mergeLinked(rows,key,related,existing=[]){
   });
 }
 function carryover(project, date) {
+  project=focus.project(project);
   const previous = yesterday(date), result = [];
   for (const item of project.records || []) if (item.date === previous && ['进行中','未解决','待验证'].includes(item.status)) {
     const later = (project.records || []).find(next => next.date > item.date && next.issueKey && next.issueKey === item.issueKey && next.status === '已完成');
@@ -54,7 +56,7 @@ function carryover(project, date) {
   }
   for (const item of project.requirementConfirmations || []) if (item.status !== '已解决') result.push({ key: item.confirmationKey || item.id, type: '待客户确认', text: clean(`${item.scenario}：${item.question}`,240), date: item.sourceLastAt ? localDate(item.sourceLastAt) : '' });
   for (const item of project.requirements || []) if (item.status!=='已完成') for (const question of item.questions || []) if (!result.some(r=>r.text.includes(question))) result.push({key:item.requirementKey || item.id,type:'需求待确认',text:clean(`${item.title}：${question}`,240),date:item.sourceLastAt?localDate(item.sourceLastAt):''});
-  const blocker=project.blocker || project.dailyDesk?.overview?.blocker;
+  const blocker=focus.cleanText(project.blocker) || project.dailyDesk?.overview?.blocker;
   if (blocker) result.unshift({ key: 'project-blocker', type: '项目卡点', text: clean(blocker,240), date: '' });
   return result.slice(0,30);
 }
@@ -219,24 +221,24 @@ class DailyDesk {
       return {skipped:true,pending:pending.length,...this.outcome(id,date),message:day.unfinishedCount?'当天对话还在进行，请在回复结束后再次整理':'没有新增内容，已保存成果保留'};
     }
     sources.sort((a,b)=>String(a.timestamp || '').localeCompare(String(b.timestamp || '')) || a.id.localeCompare(b.id,undefined,{numeric:true}));
-    const previous=p.dailyDesk?.overview || {};
+    const business=focus.project(p),previous=business.dailyDesk?.overview || {};
     const coveredTurns=new Set(sources.filter(source=>source.turnId).map(source=>source.turnId));
-    const previousItems=((p.codex?.dailySummaries || []).find(s=>s.date===date)?.items || []).filter(item=>!materialOnly(item)&&(!replacing||!(item.turnIds||[]).length||(item.turnIds||[]).some(id=>!coveredTurns.has(id))));
+    const previousItems=((business.codex?.dailySummaries || []).find(s=>s.date===date)?.items || []).filter(item=>!materialOnly(item)&&(!replacing||!(item.turnIds||[]).length||(item.turnIds||[]).some(id=>!coveredTurns.has(id))));
     const materialReferences=[];let tagBudget=2400;
     for(const hint of [...p.materialReferences||[]].reverse()){
       if(hint.labels.length||!sources.some(source=>source.id===`turn:${hint.turnId}`))continue;
       const compact={targetId:hint.targetId,turnId:hint.turnId,evidence:clean(hint.evidence,500),labels:hint.labels,sourceAt:hint.sourceAt,sourceRef:clean(hint.sourceRef,400)};
       const size=JSON.stringify(compact).length;if(size>tagBudget)continue;tagBudget-=size;materialReferences.push(compact);if(materialReferences.length>=10)break;
     }
-    const input={date,project:p.name,projectContext:{customer:p.customer||'',stage:p.stage||'',nextAction:p.nextAction||'',blocker:p.blocker||''},sources,previousOverview:previous,previousItems:previousItems.slice(-20).map(priorContext),
+    const input={date,project:p.name,projectContext:{customer:p.customer||'',stage:p.stage||'',nextAction:focus.cleanText(p.nextAction)||'',blocker:focus.cleanText(p.blocker)||''},sources,previousOverview:previous,previousItems:previousItems.slice(-20).map(priorContext),
       materialReferences,
-      requirements:(p.requirements || []).slice(-60).map(i=>({requirementKey:i.requirementKey,title:i.title,description:clean(i.description,120),relatedRequirementKeys:i.relatedRequirementKeys||[]})),
-      confirmations:(p.requirementConfirmations || []).slice(-40).map(i=>({confirmationKey:i.confirmationKey,scenario:clean(i.scenario,120),question:clean(i.question,100),workaround:clean(i.workaround,100),status:i.status,relatedConfirmationKeys:i.relatedConfirmationKeys||[]})),carryover:carryover(p,date)};
+      requirements:(business.requirements || []).slice(-60).map(i=>({requirementKey:i.requirementKey,title:i.title,description:clean(i.description,120),relatedRequirementKeys:i.relatedRequirementKeys||[]})),
+      confirmations:(business.requirementConfirmations || []).slice(-40).map(i=>({confirmationKey:i.confirmationKey,scenario:clean(i.scenario,120),question:clean(i.question,100),workaround:clean(i.workaround,100),status:i.status,relatedConfirmationKeys:i.relatedConfirmationKeys||[]})),carryover:carryover(p,date)};
     const schema='输出 JSON：{overview:{scene:"整体业务场景",requirements:"整体交付目标",progress:"整体能力与当前阶段",nextAction:"主要交付动作",blocker:"关键依赖；五项各一两句，非当天任务清单"},items:[{issueKey,title,cause,action,result,status:"已完成|进行中|未解决|待验证",sourceIds:["本次来源编号"],relatedIssueKeys:[]}],requirements:[{requirementKey,title,description,status:"已明确|待确认",sourceIds:[],relatedRequirementKeys:[]}],confirmations:[{confirmationKey,scenario,question,workaround,status:"待确认|已解决",resolution,sourceIds:[],relatedConfirmationKeys:[],requirementKeys:[]}],materialTags:[{targetId,turnId,evidence:"与 materialReferences 完全相同的用户介绍",labels:["标签"]}],reportText:"先交代有证据的当天需求或测试背景，再写问题、处理与结果的简短日报",reportIssueKeys:["日报涵盖的全部当日工作编号"]}。sources中的structuredConfirmation由程序按原文字段直接保存，不要在confirmations重复返回；已填写的客户回复可更新需求和概览，不能冒充当天完成的工作。materialTags可为空，仅引用materialReferences的目标与用户原话，标签须原话出现或引用已验证分类，不能根据Codex答复、正文、文件名推断；不要把工作任务名当成资料用途。items、requirements和confirmations只返回本次新增或更新事项；未涉及的旧事项由程序原样保留，不要重复输出。同一编号只输出一次，relatedIssueKeys、relatedRequirementKeys、relatedConfirmationKeys不能包含本项自身编号；同一业务多轮修改合成一项，已有编号或别名沿用，不按每轮问答拆条。延续旧工作时沿用issueKey或relatedIssueKeys，概括关联处理和最新结果，旧真实来源与附件由程序合回。每个新增或更新事项至少逐字引用sources中一个本次来源id，不使用文件名、路径、数字序号或自造编号代替。previousItems的来源只代表已整理上下文，不能单独证明新的变化。contextOnly=true的文件仅用于理解业务与需求，不能当作当天已分析、已开发或已交付的工作；items必须有当天对话证据。reportText只概括当天对话和previousItems的真实工作，不复述资料里的历史业务，不把修改时间当工作日期；reportIssueKeys列出日报涵盖的全部工作编号，包括previousItems；只新增资料时保持已有日报，当天没有工作留空。';
     await this.commit(()=>{if(!this.isCurrent(id,archiveRevision))throw new Error('项目已归档或状态已改变，已停止整理');this.store.saveDailyDesk(id,date,{status:'running',message:'正在整理当前日期的新增内容'});this.notify({dailyUpdated:id});});
     try {
       if(!this.isCurrent(id,archiveRevision))throw new Error('项目已归档或状态已改变，已停止整理');
-      const output=await this.request(config,apiKey,[{role:'system',content:clean(this.getRules(),12000)+'\n以下为本次 FDE 简洁输出的优先约束：\n'+fs.readFileSync(path.join(__dirname,'daily-desk-rules.md'),'utf8')+presetPrompt(this.store.getState().settings.summaryPreset)+'\n'+schema},{role:'user',content:JSON.stringify(input)}],undefined,{maxTokens:sources.some(s=>s.confirmationPoint)?9000:4500,sourceAliases:true});
+      const output=await this.request(config,apiKey,[{role:'system',content:clean(this.getRules(),12000)+'\n以下为本次 FDE 简洁输出的优先约束：\n'+fs.readFileSync(path.join(__dirname,'daily-desk-rules.md'),'utf8')+presetPrompt(this.store.getState().settings.summaryPreset)+'\n'+schema+'\n'+focus.RULES},{role:'user',content:JSON.stringify(input)}],undefined,{maxTokens:sources.some(s=>s.confirmationPoint)?9000:4500,sourceAliases:true});
       if(this.stopped || !this.isCurrent(id,archiveRevision) || this.project(id)?.codex?.threadId!==threadId || this.project(id)?.sourceDir!==p.sourceDir || this.project(id)?.devDir!==p.devDir) throw new Error('项目关联或归档状态已改变，已忽略旧整理结果');
       const result=validate(output,sources,previousItems,{requirements:p.requirements,confirmations:p.requirementConfirmations,knownConfirmationSources:files.flatMap(file=>fileEvidence(file,raw.turns)),allowPartialConfirmations:true});
       for(const point of result.pendingConfirmationPoints){
@@ -257,7 +259,7 @@ class DailyDesk {
     }
   }
   outcome(id,date){
-    const p=this.project(id),day=p.dailyDesk?.days?.[date]||{};
+    const p=focus.project(this.project(id)),day=p.dailyDesk?.days?.[date]||{};
     return {...this.store.verifyDailySaved(id,date),workCount:(p.records||[]).filter(item=>item.date===date&&(item.manual||item.confirmed||!materialOnly(item))).length,reportSaved:(p.reports||[]).some(report=>report.date===date),unfinishedCount:day.unfinishedCount||0,archiveWarning:p.archiveWarning||''};
   }
   async runAll(date=localDate(this.now())) {
@@ -312,6 +314,6 @@ function validate(output,sources,previousItems=[],existing={}) {
   mergedConfirmations=mergedConfirmations.filter(item=>!overmerged.includes(item));
   const pendingConfirmationPoints=[...points].filter(([,ids])=>!mergedConfirmations.some(item=>ids.some(id=>item.sourceIds.includes(id)))).map(([point])=>point);
   if(pendingConfirmationPoints.length&&!existing.allowPartialConfirmations)throw new Error('确认单存在未提炼的问题，原记录保留；请重试整理');
-  return {items:mergeLinked(items,'issueKey','relatedIssueKeys',previousItems),requirements:mergeLinked(requirements,'requirementKey','relatedRequirementKeys',existing.requirements),confirmations:mergedConfirmations,pendingConfirmationPoints,overview:Object.fromEntries(['scene','requirements','progress','nextAction','blocker'].map(key=>[key,field(output.overview[key] || '',600)])),reportText:field(output.reportText,5000)};
+  return focus.result({items:mergeLinked(items,'issueKey','relatedIssueKeys',previousItems),requirements:mergeLinked(requirements,'requirementKey','relatedRequirementKeys',existing.requirements),confirmations:mergedConfirmations,pendingConfirmationPoints,overview:Object.fromEntries(['scene','requirements','progress','nextAction','blocker'].map(key=>[key,field(output.overview[key] || '',600)])),reportText:field(output.reportText,5000)});
 }
 module.exports={DailyDesk,localDate,yesterday,carryover,validate};

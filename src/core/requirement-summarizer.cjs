@@ -4,6 +4,7 @@
 // project files, executes conversation instructions, or changes persisted state.
 const { createHash } = require('node:crypto');
 const { validateConfig, requiresApiKey, requestJson } = require('./model-api.cjs');
+const focus=require('./business-focus.cjs');
 
 const VERSION = 3;
 const KEY = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/;
@@ -270,8 +271,8 @@ async function summarizeRequirements({ sources = [], previousItems = [], previou
   if (!normalized.enabled || (!apiKey && requiresApiKey(normalized))) throw new Error('请先配置并启用可用的整理模型，再自动整理需求');
   const input = normalizedSources(sources);
   if (!input.length || !input.some(source => source.text || source.attachments.length)) throw new Error('没有可整理的业务资料或项目业务对话');
-  const previous = backfillProvenance(normalizedPrevious(previousItems), input);
-  const previousQuestions = backfillProvenance(normalizedPreviousConfirmations(previousConfirmations), input);
+  const previous = backfillProvenance(focus.requirements(normalizedPrevious(previousItems)), input);
+  const previousQuestions = backfillProvenance(focus.confirmations(normalizedPreviousConfirmations(previousConfirmations)), input);
   const only = confirmationsOnly === true;
   const compactRequirement = only ? compactRequirementScope : compactItem;
   let items = previous, confirmations = previousQuestions, processed = [];
@@ -293,7 +294,7 @@ async function summarizeRequirements({ sources = [], previousItems = [], previou
       } };
       // Network/provider errors, JSON parsing and secret guards are deliberately
       // outside the retry scope. Never resend an unvalidated model response.
-      const response = await requestJson(normalized, apiKey, [{ role: 'system', content: only ? CONFIRMATIONS_ONLY_SYSTEM : SYSTEM }, { role: 'user', content: JSON.stringify(redactCredential(request, typeof apiKey === 'string' ? apiKey.trim() : '')) }], fetchImpl, { maxTokens: 9000 });
+      const response = await requestJson(normalized, apiKey, [{ role: 'system', content: (only ? CONFIRMATIONS_ONLY_SYSTEM : SYSTEM)+'\n'+focus.RULES }, { role: 'user', content: JSON.stringify(redactCredential(request, typeof apiKey === 'string' ? apiKey.trim() : '')) }], fetchImpl, { maxTokens: 9000 });
       try { validated = validateResult(response, processed, context, confirmationContext, only); break; }
       catch (error) { if (attempt > 0) throw firstValidationError; firstValidationError = error; }
     }
@@ -301,7 +302,7 @@ async function summarizeRequirements({ sources = [], previousItems = [], previou
   }
   const key = typeof apiKey === 'string' ? apiKey.trim() : '';
   if (key && JSON.stringify({ items, confirmations }).includes(key)) throw new Error('需求来源包含不应输出的敏感信息，未保存本次结果');
-  return { items, confirmations, method: 'model' };
+  return { items:focus.requirements(items), confirmations:focus.confirmations(confirmations), method: 'model' };
 }
 
 module.exports = { summarizeRequirements, requirementsFingerprint };

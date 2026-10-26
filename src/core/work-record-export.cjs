@@ -1,5 +1,6 @@
 'use strict';
 const Zip=require('adm-zip');
+const focus=require('./business-focus.cjs');
 const COLUMNS=[['date','工作日期'],['title','标题'],['cause','原因'],['result','结果'],['action','处理']];
 function validDate(value){return typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&Number.isFinite(Date.parse(value+'T00:00:00Z'))&&new Date(value+'T00:00:00Z').toISOString().slice(0,10)===value;}
 function selectRecords(project,{startDate='',endDate='',versionId=''}={}){
@@ -12,7 +13,7 @@ function selectRecords(project,{startDate='',endDate='',versionId=''}={}){
     if(!version)throw Error('所选版本不存在，请重新查看后导出');
     records=version.records;
   }
-  return [...records].filter(row=>(!startDate||row.date>=startDate)&&(!endDate||row.date<=endDate)).sort((a,b)=>String(b.date).localeCompare(String(a.date))||String(b.updatedAt||b.createdAt).localeCompare(String(a.updatedAt||a.createdAt)));
+  return focus.records([...records].filter(row=>(!startDate||row.date>=startDate)&&(!endDate||row.date<=endDate))).sort((a,b)=>String(b.date).localeCompare(String(a.date))||String(b.updatedAt||b.createdAt).localeCompare(String(a.updatedAt||a.createdAt)));
 }
 function xml(value){return String(value??'').replace(/[^\u0009\u000A\u000D\u0020-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]/gu,'').replace(/_x[0-9a-f]{4}_/gi,match=>'_x005F_'+match.slice(1)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;').replace(/\r/g,'&#13;');}
 function createWorkbook(records){

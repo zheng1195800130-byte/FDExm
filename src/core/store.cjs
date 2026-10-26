@@ -1,6 +1,7 @@
 'use strict';
 const {materialOnly,workReport}=require('./daily-report.cjs');
 const dailyHistory=require('./daily-history.cjs');
+const businessFocus=require('./business-focus.cjs');
 
 const fs = require('node:fs');
 const fsp = fs.promises;
@@ -1103,7 +1104,7 @@ class Store {
   }
 
   generateReport(projectId, date) {
-    const project = this._project(projectId);
+    const project = businessFocus.project(this._project(projectId));
     date = dateValue(date);
     const organized = project.dailyDesk?.days?.[date];
     if (organized?.digest?.workEvidenceVersion===2 && organized.digest.reportText && !(project.codex?.summaryDismissals||[]).some(d=>d.date===date&&d.threadId===project.codex?.threadId) && !project.records.some(r => r.date === date && (r.manual || r.confirmed || r.recoveredFrom))) {
@@ -1172,7 +1173,7 @@ class Store {
     const text=this.generateReport(projectId,date).text;
     if(!text.trim())return false;
     const folder=this._projectDir(projectId);
-    if(existing?.text===text&&!project.archiveWarning&&fs.existsSync(path.join(folder,'日报',date+'.md'))&&fs.existsSync(path.join(folder,'工作记录',date+'.md')))return false;
+    if(existing&&(existing.text===text||businessFocus.cleanText(existing.text)===text)&&!project.archiveWarning&&fs.existsSync(path.join(folder,'日报',date+'.md'))&&fs.existsSync(path.join(folder,'工作记录',date+'.md')))return false;
     this.saveReport(projectId,date,text,{automatic:true});
     return true;
   }

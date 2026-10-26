@@ -28,6 +28,19 @@ test('整理预设仅在人工整理的增量请求使用，保存或改风格�
  f.add('甲项目','two');await f.service.run(id);assert.equal(f.calls.length,2);assert.match(f.prompts[1],/只写业务结果/);assert.ok(!f.prompts[1].includes('风格示例项目'));
  assert.deepEqual(f.calls[1].sources.map(s=>s.id),['turn:two']);
 });
+test('整理只保存业务结果，不把工具交付状态变成项目工作或阻塞',async t=>{
+ const f=await fixture(t),id=f.projects[0].id;f.add('甲项目','business','2026-10-10','金额已修复，未推送GitLab，EasyClaw同步失败，真实账单未重跑');
+ f.service.request=async(_c,_k,m)=>{assert.match(m[0].content,/GitLab.*EasyClaw/s);return {overview:{scene:'核对账单',requirements:'按业务规则核价',progress:'金额修复完成，未推送GitLab',nextAction:'同步EasyClaw',blocker:'GitLab未同步'},items:[{issueKey:'fee',title:'修复金额',action:'修复空值并同步EasyClaw项目',result:'自测通过，未重跑真实账单，未推送GitLab',status:'待验证',sourceIds:['turn:business']},{issueKey:'sync',title:'同步EasyClaw',action:'同步失败',sourceIds:['turn:business']}],requirements:[{requirementKey:'fee',title:'核对金额',description:'按客户规则核对',status:'已明确',sourceIds:['turn:business']},{requirementKey:'sync',title:'同步EasyClaw',description:'安装本地应用',status:'待确认',sourceIds:['turn:business']}],confirmations:[{confirmationKey:'price',scenario:'客户报价口径不一致',question:'采用哪个收费标准？',status:'待确认',sourceIds:['turn:business']},{confirmationKey:'restart',scenario:'本地应用发布',question:'是否重启EasyClaw？',status:'待确认',sourceIds:['turn:business']}],reportIssueKeys:['fee'],reportText:'金额已修复，真实账单未重跑，未推送GitLab。'};};
+ const result=await f.service.run(id),p=f.store.getState().projects[0];assert.equal(result.workCount,1);assert.equal(p.records[0].status,'待验证');assert.equal(p.requirements.length,1);assert.equal(p.requirementConfirmations.length,1);assert.equal(p.requirementConfirmations[0].status,'待确认');
+ assert.ok(!/GitLab|EasyClaw/.test(JSON.stringify([p.records,p.reports,p.dailyDesk.overview])));assert.match(p.records[0].result,/未重跑真实账单/);assert.equal(p.dailyDesk.overview.blocker,'');assert.equal(p.dailyDesk.overview.nextAction,'');
+});
+
+test('仅业务视图过滤的旧自动日报不触发历史重写或新增版本',async t=>{
+ const f=await fixture(t),id=f.projects[0].id,date='2026-10-10';f.add('甲项目','one');await f.service.run(id);
+ const p=f.store.state.projects[0],legacy=p.reports[0].text+'未推送GitLab。';p.dailyDesk.days[date].digest.reportText=legacy;f.store.saveReport(id,date,legacy,{automatic:true});
+ const before=fs.readFileSync(f.store.statePath),history=JSON.stringify(p.dailyHistory);assert.equal(f.store.saveOrganizedReport(id,date),false);assert.deepEqual(fs.readFileSync(f.store.statePath),before);assert.equal(JSON.stringify(p.dailyHistory),history);assert.doesNotMatch(f.store.generateReport(id,date).text,/GitLab/);
+});
+
 test('上海日期按零点切换',()=>{assert.equal(localDate('2026-10-10T15:59:59Z'),'2026-10-10');assert.equal(localDate('2026-10-10T16:00:00Z'),'2026-10-11');});
 
 test('整理立即保存工作和日报到本地文件，重启可读，增量更新自动日报而不覆盖人工正文',async t=>{
@@ -260,6 +273,6 @@ test('模型日报遗漏当日已有事项时不采用，按工作证据本地�
  const text=f.store.generateReport(id,'2026-10-10').text;assert.match(text,/完善提单导入/);assert.match(text,/同步交付/);assert.doesNotMatch(text,/漏掉之前/);
 });
 
-test('本地日报补全按关联事项归并，保留人工确认而不附测试次数',()=>{const {workReport}=require('../src/core/daily-report.cjs');const text=workReport('账单',[{title:'转换并同步交付',action:'导入汇总表生成应付流水',result:'40项测试通过，已同步宿主；尚未客户验收',turnIds:['today']},{title:'人工核对资料',action:'核对客户收费口径',confirmed:true,sourceRef:'D:\\资料\\标准.xlsx'}]);assert.match(text,/已同步宿主/);assert.match(text,/尚未客户验收/);assert.match(text,/人工核对资料/);assert.doesNotMatch(text,/40项测试/);});
+test('本地日报补全按关联事项归并，保留人工确认而不附测试次数',()=>{const {workReport}=require('../src/core/daily-report.cjs');const text=workReport('账单',[{title:'转换并同步交付',action:'导入汇总表生成应付流水',result:'40项测试通过，已同步宿主；尚未客户验收',turnIds:['today']},{title:'人工核对资料',action:'核对客户收费口径',confirmed:true,sourceRef:'D:\\资料\\标准.xlsx'}]);assert.doesNotMatch(text,/已同步宿主/);assert.match(text,/尚未客户验收/);assert.match(text,/人工核对资料/);assert.doesNotMatch(text,/40项测试/);});
 
 test('旧文件误记仅从工作展示过滤，原记录不删，人工核对仍可见',()=>{const {workProject}=require('../src/core/daily-report.cjs');const item={issueKey:'file-only',turnIds:[],sourceRef:'D:\\资料\\历史账单.xlsx'},record={...item,date:'2026-10-10',managedBy:'codex-auto'},p={records:[record],codex:{dailySummaries:[{date:'2026-10-10',items:[item]}]}};const view=workProject(p);assert.equal(view.records.length,0);assert.equal(view.codex.dailySummaries[0].items.length,0);assert.equal(p.records.length,1);assert.equal(p.codex.dailySummaries[0].items.length,1);record.confirmed=true;assert.equal(workProject(p).records.length,1);assert.equal(workProject(p).codex.dailySummaries[0].items.length,1);});

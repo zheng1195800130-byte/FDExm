@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const { extractDrafts } = require('./codex.cjs');
 const { DEFAULT_CONFIG, validateConfig, requiresApiKey, requestJson, listModels } = require('./model-api.cjs');
 const { DEFAULT_RULES, normalizeRules } = require('./summary-rules.cjs');
+const focus=require('./business-focus.cjs');
 
 const VERSION = 5;
 const STATUS = new Set(['进行中', '已完成', '待验证', '未解决']);
@@ -300,7 +301,7 @@ async function summarizeDay({ date, turns = [], previousItems = [], existingItem
   const normalized = validateConfig(config);
   if (!selected.length || !normalized.enabled || (!apiKey && requiresApiKey(normalized))) {
     const local = localSummary(selected, [...previousItems, ...existingItems]);
-    return { ...local, items: enforceItemLimit(mergeExistingItems(existingItems, local.items, selected)) };
+    return { ...local, items: focus.records(enforceItemLimit(mergeExistingItems(existingItems, local.items, selected))) };
   }
   if (typeof fetchImpl !== 'function') throw new Error('当前环境不支持模型连接');
   const chunks = chunksFor(selected);
@@ -314,7 +315,7 @@ async function summarizeDay({ date, turns = [], previousItems = [], existingItem
     const context = [...historicalIssues, ...existingIssues, ...sourceItems(items.map(item => ({ ...item, date })), date).map(item => ({ ...item, allowTitleMatch: false }))];
     const data = { date, historicalIssues, existingIssues, dailySoFar, allowedIssueKeys: [...contextKeys(context)],
       allowedTurnIds: processed.map(turn => turn.id), turns: chunk.map(turnData) };
-    const system = `你是个人 FDE 工作记录整理员。请按照以下全局整理规则提炼简短成果。\n\n${normalizedRules}\n\n## 固定输出与来源协议\n\n${SYSTEM_PROTOCOL}`;
+    const system = `你是个人 FDE 工作记录整理员。请按照以下全局整理规则提炼简短成果。\n\n${normalizedRules}\n\n## 固定输出与来源协议\n\n${SYSTEM_PROTOCOL}\n\n${focus.RULES}`;
     let validated, firstValidationError;
     for (let attempt = 0; attempt < 2; attempt++) {
       const input = attempt === 0 ? data : { ...data, correction: {
@@ -329,7 +330,7 @@ async function summarizeDay({ date, turns = [], previousItems = [], existingItem
     }
     items = validated;
   }
-  return { items: enforceItemLimit(mergeExistingItems(existingItems, items, selected)), method: 'model' };
+  return { items: focus.records(enforceItemLimit(mergeExistingItems(existingItems, items, selected))), method: 'model' };
 }
 
 async function testConnection({ config = {}, apiKey = '', fetchImpl = globalThis.fetch } = {}) {
