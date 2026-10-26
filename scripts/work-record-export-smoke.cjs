@@ -1,5 +1,5 @@
 'use strict';
-const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),crypto=require('node:crypto'),{_electron}=require('playwright'),Zip=require('adm-zip');
+const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),crypto=require('node:crypto'),{_electron}=require('playwright'),Zip=require('adm-zip'),{XMLParser}=require('fast-xml-parser');
 const {Store}=require('../src/core/store.cjs');
 const ROOT=path.resolve(__dirname,'..');
 async function run(){
@@ -18,7 +18,9 @@ async function run(){
     await page.locator('#record-date').fill('2026-10-21');await until(async()=>(await page.locator('.record-card').count())===3,'范围结果未包含三天');check(true,'日期范围包含起止两天');
     const output=path.join(root,'范围工作记录.xlsx');await app.evaluate(({dialog},file)=>{dialog.showSaveDialog=async()=>({canceled:false,filePath:file});},output);
     const before=hash();await page.locator('#export-records').click();await until(()=>fs.existsSync(output),'导出文件未生成');
-    const zip=new Zip(output),xml=zip.readAsText('xl/worksheets/sheet1.xml');check(xml.includes('21 日最新记录')&&xml.includes('22 日记录')&&xml.includes('23 日记录'),'导出当前范围最新内容');check(xml.includes('标题')&&xml.indexOf('原因')<xml.indexOf('结果')&&xml.indexOf('结果')<xml.indexOf('处理'),'导出列顺序正确');check(hash()===before,'导出未修改原记录及历史版本');
+    const zip=new Zip(output),xml=zip.readAsText('xl/worksheets/sheet1.xml'),sheet=new XMLParser({ignoreAttributes:false,parseTagValue:false}).parse(xml).worksheet;
+    const cellText=c=>c.is.t['#text']??c.is.t;
+    check(xml.includes('21 日最新记录')&&xml.includes('22 日记录')&&xml.includes('23 日记录'),'导出当前范围最新内容');check(JSON.stringify(sheet.sheetData.row[0].c.map(cellText))===JSON.stringify(['工作日期','标题','原因','结果','处理']),'导出列顺序正确');check(JSON.stringify(sheet.sheetData.row.slice(1).map(row=>cellText(row.c[0])))===JSON.stringify(['2026-10-23','2026-10-22','2026-10-21']),'跨日导出每行保留对应工作日期');check(hash()===before,'导出未修改原记录及历史版本');
     await page.locator('#record-history').selectOption('2026-10-21');await until(async()=>await page.locator('.record-card').count()===1,'历史日期未恢复单日');check(await page.locator('#record-end-date').inputValue()==='2026-10-21','历史日期同步起止日期');
     await page.locator('#daily-version').selectOption(old);await until(async()=>(await page.locator('.record-card').innerText()).includes('21 日记录'),'历史版本未切换');
     const historic=path.join(root,'历史工作记录.xlsx');await app.evaluate(({dialog},file)=>{dialog.showSaveDialog=async()=>({canceled:false,filePath:file});},historic);await page.locator('#export-records').click();await until(()=>fs.existsSync(historic),'历史版本导出失败');const oldXml=new Zip(historic).readAsText('xl/worksheets/sheet1.xml');check(oldXml.includes('21 日记录')&&!oldXml.includes('21 日最新记录'),'历史版本展示和导出一致');check(await page.locator('[data-action="edit-record"]').isDisabled(),'历史版本仍不可编辑');

@@ -18,12 +18,12 @@ test('按所选历史版本导出，不混入其他版本或修改原档案',()=
 test('拒绝无效日期、倒置范围和不存在的版本',()=>{
   for(const query of [{startDate:'2026-02-30'},{startDate:'2026-10-23',endDate:'2026-10-21'},{startDate:'2026-10-21',endDate:'2026-10-22',versionId:'old'},{startDate:'2026-10-21',endDate:'2026-10-21',versionId:'missing'}])assert.throws(()=>selectRecords(project,query));
 });
-test('Excel 仅四列，保留中文、换行、空白及公式样式文本',()=>{
-  const zip=new Zip(createWorkbook([{title:'=1+1 <检查> & "核对"',cause:'第一行\n第二行',result:'_x000D_',action:''}]));
+test('Excel 五列保留原工作日期、中文、换行、空白及公式样式文本',()=>{
+  const zip=new Zip(createWorkbook([{date:'2026-10-21',updatedAt:'2026-10-26T03:00:00Z',title:'=1+1 <检查> & "核对"',cause:'第一行\n第二行',result:'_x000D_',action:''}]));
   const xml=zip.readAsText('xl/worksheets/sheet1.xml'),sheet=new XMLParser({ignoreAttributes:false,parseTagValue:false}).parse(xml).worksheet;
-  assert.deepEqual(sheet.sheetData.row[0].c.map(c=>c.is.t['#text']||c.is.t),['标题','原因','结果','处理']);
-  assert.equal(sheet.sheetData.row[1].c.length,4);assert.equal(sheet.sheetData.row[1].c[0]['@_t'],'inlineStr');assert.ok(!xml.includes('<f>'));
-  assert.ok(xml.includes('第一行\n第二行'));assert.ok(xml.includes('_x005F_x000D_'));assert.equal(sheet.autoFilter['@_ref'],'A1:D2');assert.equal(sheet.sheetViews.sheetView.pane['@_state'],'frozen');
+  assert.deepEqual(sheet.sheetData.row[0].c.map(c=>c.is.t['#text']||c.is.t),['工作日期','标题','原因','结果','处理']);
+  assert.equal(sheet.sheetData.row[1].c.length,5);assert.equal(sheet.sheetData.row[1].c[0].is.t['#text'],'2026-10-21');assert.equal(sheet.sheetData.row[1].c[1]['@_t'],'inlineStr');assert.ok(!xml.includes('<f>'));
+  assert.ok(xml.includes('第一行\n第二行'));assert.ok(xml.includes('_x005F_x000D_'));assert.equal(sheet.autoFilter['@_ref'],'A1:E2');assert.equal(sheet.dimension['@_ref'],'A1:E2');assert.equal(sheet.sheetViews.sheetView.pane['@_state'],'frozen');
 });
 test('空结果与超长字段明确报错，文件名包含筛选范围且没有非法字符',()=>{
   assert.throws(()=>createWorkbook([]),/暂无工作记录/);assert.throws(()=>createWorkbook([{title:'长文本',cause:'字'.repeat(32768)}]),/原因.*字数限制/);
