@@ -35,6 +35,19 @@ function validRevision(value){
   return typeof id==='string'&&/^[a-zA-Z0-9-]{1,100}$/.test(id)&&Number.isSafeInteger(number)&&number>0&&Number.isFinite(Date.parse(savedAt))
     &&Array.isArray(data.records)&&Array.isArray(data.requirements)&&Array.isArray(data.confirmations)&&hash(data)===fingerprint;
 }
+function restoreProgress(store,project){
+  let restored=false;
+  for(const [date,day] of Object.entries(project.dailyDesk?.days||{})){
+    if(!validDate(date)||!day.digest||day.organizedAt)continue;
+    const file=path.join(store.dataDir,'projects',project.id,'每日归档',date+'.json');
+    let archived;
+    try{archived=JSON.parse(fs.readFileSync(file,'utf8'));}catch{continue;}
+    if(archived?.evidenceVersion!==3||!archived.organizedAt||!archived.closedAt||!archived.processed||hash(archived.digest??null)!==hash(day.digest))continue;
+    project.dailyDesk.days[date]={...day,...archived,archivedDigestAt:archived.organizedAt};
+    restored=true;
+  }
+  return restored;
+}
 function reconcile(store,project){
   const base=folder(store,project);if(!fs.existsSync(base))return false;
   let changed=false;project.dailyHistory||={};
@@ -64,7 +77,7 @@ function reconcile(store,project){
       project[field]=[...byId.values()];
     }
   }
-  return changed;
+  return restoreProgress(store,project)||changed;
 }
 function importLegacy(store,project){
   const base=path.join(store.dataDir,'projects',project.id);let changed=false;

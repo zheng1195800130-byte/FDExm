@@ -164,6 +164,9 @@ class DailyDesk {
   rollover(id,date=localDate(this.now())) {
     const p=this.project(id); if (!p) return;
     for (const [day,value] of Object.entries(p.dailyDesk?.days || {})) if (day<date && (!value.closedAt || (value.organizedAt && value.archivedDigestAt!==value.organizedAt))) {
+      const file=path.join(this.store.projectFolder(id),'每日归档',`${day}.json`);
+      // A restored digest alone is not a complete replacement for its archive.
+      if(value.digest&&!value.organizedAt&&fs.existsSync(file))continue;
       // Archive locally only. A human-saved report always wins.
       const report=(p.reports||[]).find(r=>r.date===day);
       if (!report || report.autoArchived) {
@@ -174,7 +177,7 @@ class DailyDesk {
         }
       }
       const archive={...value,closedAt:this.now().toISOString()};
-      this.store._atomicWrite(path.join(this.store.projectFolder(id),'每日归档',`${day}.json`),JSON.stringify(archive,null,2));
+      this.store._atomicWrite(file,JSON.stringify(archive,null,2));
       this.store.saveDailyDesk(id,day,{closedAt:archive.closedAt,archivedAt:value.archivedAt || archive.closedAt,archivedDigestAt:value.organizedAt || ''});
     }
   }
@@ -200,17 +203,19 @@ class DailyDesk {
   async backfill(id,date,revision) {
     const dates=[];let day=date;
     for(let offset=1;offset<RECENT_DAYS;offset++){day=yesterday(day);dates.unshift(day);}
-    const results=[];
+    const results=[],missingProgress=[];
     const scope=await this.capture(id,{dates,materialHistory:false}).catch(error=>({dates:[],warning:clean(error.message,240)}));
     for(const day of scope?.dates||[]){
       if(this.stopped||!this.isCurrent(id,revision))break;
       const metadata=this.project(id).dailyDesk?.days?.[day];
       if((metadata?.unprocessedCount||0)<=(metadata?.pendingFiles||0))continue;
+      if(metadata.digest&&!metadata.organizedAt){missingProgress.push(day);continue;}
       try{results.push({date:day,...await this.organize(id,day,'append',{historical:true,captured:true})});}
       catch(error){results.push({date:day,error:error.message});}
     }
     const waiting=(scope?.dates||[]).filter(day=>this.project(id)?.dailyDesk?.days?.[day]?.unfinishedCount);
-    return {results,waiting,warning:scope?.warning||(scope?.partial?'部分历史对话未能完整读取，可选日期单独补整理':'')};
+    const warning=[scope?.warning,scope?.partial?'部分历史对话未能完整读取，可选日期单独补整理':'',missingProgress.length?`${missingProgress.join('、')} 已有成果，整理进度缺失，可单独补整理`:''].filter(Boolean).join('；');
+    return {results,waiting,warning};
   }
   async organize(id,date,mode='append',{historical=false,captured=false}={}) {
     if(!captured)await this.capture(id,{date,materialHistory:false});

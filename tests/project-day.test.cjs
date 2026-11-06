@@ -61,6 +61,22 @@ test('历史补整理不混入当期资料或较新的需求，失败日期可�
   const saved=f.current();assert.equal(JSON.stringify(saved.dailyHistory[DATE]),afterToday);assert.equal(saved.requirements[0].title,'较新的需求');
   assert.equal(saved.dailyHistory[missed].at(-1).requirements[0].title,'当日原需求');assert.equal(saved.reports.find(row=>row.date===missed).text,'人工日报保留');
 });
+test('主档案回退后从匹配的每日归档恢复检查点，保留历史文件并跳过已整理对话',async t=>{
+  const f=fixture(t),id=f.p.id,prior='2026-10-11',before=fs.readFileSync(f.store.statePath);
+  f.write('old-chat',f.work('saved','已整理工作',1,prior));
+  await f.service.run(id,prior,'append',{recover:true});
+  const archived=path.join(f.store.projectFolder(id),'每日归档',prior+'.json'),original=fs.readFileSync(archived);
+  fs.writeFileSync(f.store.statePath,before);
+  f.service.store=new Store(f.store.dataDir);
+  assert.deepEqual(f.service.project(id).dailyDesk.days[prior].processed,JSON.parse(original).processed);
+  const result=await f.service.run(id,DATE,'append',{catchUp:true});
+  assert.deepEqual(result.backfill.results,[]);assert.equal(f.calls.length,1);assert.deepEqual(fs.readFileSync(archived),original);
+  const unrelated={...JSON.parse(original),digest:{reportText:'不匹配的整理内容'}};fs.writeFileSync(archived,JSON.stringify(unrelated));
+  fs.writeFileSync(f.store.statePath,before);
+  f.service.store=new Store(f.store.dataDir);
+  const mismatched=await f.service.run(id,DATE,'append',{catchUp:true});assert.match(mismatched.backfill.warning,/已有成果，整理进度缺失/);
+  assert.equal(f.calls.length,1);assert.deepEqual(JSON.parse(fs.readFileSync(archived)),unrelated);
+});
 test('仅归档目录存在时仍能找到原会话，缓存后的归档移动也可继续读取',async t=>{
   const f=fixture(t),rows=f.work('morning','上午核对');const original=f.write('old-chat',rows);
   assert.equal((await codex.readThread({home:f.home,cwd:f.cwd,threadId:'old-chat',date:DATE})).turns.length,1);
