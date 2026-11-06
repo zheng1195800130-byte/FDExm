@@ -1,7 +1,7 @@
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict'),{_electron}=require('playwright');
 const {Store}=require('../src/core/store.cjs'),{localDate,yesterday}=require('../src/core/daily-desk.cjs');
-const ROOT=path.resolve(__dirname,'..'),DATE=localDate(new Date()),PRIOR=yesterday(DATE),pause=ms=>new Promise(r=>setTimeout(r,ms));
+const ROOT=path.resolve(__dirname,'..'),DATE=localDate(new Date()),PRIOR=yesterday(DATE),OLDER=localDate(Date.now()-8*86400000),pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function run(){
  fs.mkdirSync(path.join(ROOT,'test-output'),{recursive:true});const root=fs.mkdtempSync(path.join(ROOT,'test-output','daily-version-')),data=path.join(root,'data'),home=path.join(root,'codex'),source=path.join(root,'source'),dev=path.join(root,'dev');for(const dir of [home,source,dev])fs.mkdirSync(dir);
  let calls=0;const errors=[],checks=[];const check=(ok,label)=>{assert.ok(ok,label);checks.push(label);};
@@ -9,17 +9,16 @@ async function run(){
  const seed=new Store(data),project=seed.createProject({name:'每日保存与重开验收',sourceDir:source,devDir:dev,indexArtifacts:false});seed.bindCodexThread(project.id,{threadId:project.id});seed.setSettings({activeProjectId:project.id});seed.saveSummarizerSettings({enabled:true,provider:'compatible',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',model:'local-fixture'});
  const session=path.join(home,'sessions',...DATE.split('-'));fs.mkdirSync(session,{recursive:true});const rollout=path.join(session,'rollout-'+project.id+'.jsonl');
  function rows(id,date){const timestamp=date+'T03:00:00Z';return [{type:'session_meta',timestamp,payload:{id:project.id,cwd:dev}},{type:'event_msg',timestamp,payload:{type:'task_started',turn_id:id}},{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:id+'：请处理业务并保留需求与结果。'}]}},{type:'response_item',timestamp,payload:{type:'message',role:'assistant',phase:'final_answer',content:[{type:'output_text',text:id+'：已经完成本次处理，保留待确认口径。'}]}},{type:'event_msg',timestamp,payload:{type:'task_complete',turn_id:id}}].map(JSON.stringify).join('\n')+'\n';}
- fs.writeFileSync(rollout,rows('prior',PRIOR)+rows('first',DATE));const env={...process.env,FDE_TEST:'1',FDE_DATA_DIR:data,CODEX_HOME:home};delete env.ELECTRON_RUN_AS_NODE;
+ fs.writeFileSync(rollout,rows('older',OLDER)+rows('prior',PRIOR)+rows('first',DATE));const env={...process.env,FDE_TEST:'1',FDE_DATA_DIR:data,CODEX_HOME:home};delete env.ELECTRON_RUN_AS_NODE;
  let app,page;const disk=()=>JSON.parse(fs.readFileSync(path.join(data,'store.json'),'utf8')).projects[0];
  const until=async(fn,label)=>{for(let i=0;i<180;i++){if(await fn())return;await pause(80);}throw Error(label);};
- const request=(action,payload={})=>page.evaluate(({action,payload})=>window.fde.request(action,payload),{action,payload});
  async function launch(){app=await _electron.launch({executablePath:process.env.FDE_SMOKE_EXECUTABLE||require('electron'),args:process.env.FDE_SMOKE_EXECUTABLE?[]:[ROOT],env,timeout:40000});await until(()=>{page=app.windows().find(w=>w.url().endsWith('/index.html'));return !!page;},'未找到工作台');page.setDefaultTimeout(12000);page.on('pageerror',e=>errors.push(e.message));await page.locator('[data-route="records"]').waitFor();}
  async function route(name){await page.locator('[data-route="'+name+'"]').click();await page.locator(name==='reports'?'#report-date':name==='records'?'#record-date':'#requirement-after').waitFor();}
  async function date(id,value){await page.locator('#'+id).fill(value);await page.locator('#'+id).dispatchEvent('change');await until(async()=>await page.locator('#'+id).inputValue()===value,'日期未切换');}
  try{
   await launch();check(calls===0,'启动不读取真实会话或请求模型');
-  const prior=await request('daily:run',{id:project.id,date:PRIOR});check(prior.savedVerified,'指定历史日整理经过保存核验');const priorBytes=JSON.stringify(disk().dailyHistory[PRIOR]);
   await page.locator('button[data-route="overview"]').click();await page.locator('[data-action="daily-current"]').click();await until(()=>calls===2&&disk().dailyHistory?.[DATE]?.length===1,'首次点击未保存');await until(async()=>await page.locator('[data-action="daily-current"]').isEnabled(),'整理按钮未恢复');
+  const priorBytes=JSON.stringify(disk().dailyHistory[PRIOR]);check(disk().dailyHistory[PRIOR][0].report.text==='日报第1次'&&!disk().dailyHistory[OLDER],'一次点击自动补存昨日，范围外日期可单独补整');
   check(disk().dailyHistory[DATE][0].report.text==='日报第2次'&&disk().dailyHistory[DATE][0].requirements[0].title==='需求第2次','点击整理自动保存工作、日报、需求和确认问题');
   fs.appendFileSync(rollout,rows('added',DATE));await page.locator('[data-action="daily-current"]').click();await until(()=>calls===3&&disk().dailyHistory[DATE].length===2,'追加点击未保存');await until(async()=>await page.locator('[data-action="daily-current"]').isEnabled(),'追加整理未结束');check(disk().dailyHistory[DATE][0].records[0].result==='完成第2次','同日追加保留此前版本');
   await page.locator('#organize-mode').selectOption('replace');await page.locator('[data-action="daily-current"]').click();await until(()=>calls===4&&disk().dailyHistory[DATE].length===3,'重新整理未保存');await until(async()=>await page.locator('[data-action="daily-current"]').isEnabled(),'重整未结束');check(disk().dailyHistory[DATE].at(-1).report.text==='日报第4次','没有新增对话也可重新生成当天内容');check(JSON.stringify(disk().dailyHistory[PRIOR])===priorBytes,'当天追加与覆盖不改写前一天');
@@ -35,7 +34,10 @@ async function run(){
   await route('reports');await date('report-date',DATE);check((await page.locator('#report-preview').innerText()).includes('日报第4次'),'退出重开显示最新日报');check(await page.locator('#daily-version option').count()===3,'重开后同日三个版本仍在');
   await page.locator('[data-action="edit-report"]').click();await page.locator('#report-text').fill('人工修订保留');await page.locator('[data-action="save-report"]').click();await until(()=>disk().dailyHistory[DATE].length===4,'人工修订未形成版本');check(disk().dailyHistory[DATE][2].report.text==='日报第4次','人工修订继续保留原日报');
   await page.setViewportSize({width:1024,height:760});await page.screenshot({path:path.join(root,'report-1024.png'),fullPage:true});check(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),'日期与版本工具栏在窄窗无横向溢出');
-  await app.close();app=null;await launch();await route('reports');await date('report-date',DATE);check((await page.locator('#report-preview').innerText()).includes('人工修订保留'),'再次退出重开保留人工修订');check(calls===4,'日期切换、版本查看、重开不触发额外模型请求');check(errors.length===0,'无页面与模拟接口错误');
+  await app.close();app=null;await launch();await route('reports');await date('report-date',DATE);check((await page.locator('#report-preview').innerText()).includes('人工修订保留'),'再次退出重开保留人工修订');check(calls===4,'日期切换、版本查看、重开不触发额外模型请求');
+  await route('records');await date('record-date',OLDER);await date('record-end-date',OLDER);await page.locator('[data-action="recover-record-date"]').click();await until(()=>calls===5&&disk().dailyHistory?.[OLDER]?.length===1,'选定旧日期未保存');
+  await page.locator('.record-card').waitFor();check((await page.locator('.record-card').innerText()).includes('完成第5次'),'工作记录支持单独补整理较早日期');
+  check(disk().dailyHistory[DATE].at(-1).report.text==='人工修订保留','单日补整理保留最新手工日报');check(errors.length===0,'无页面与模拟接口错误');
   const result={checks:checks.length,modelRequests:calls,errors,boundary:'独立模拟会话、数据和本机模型接口，无真实客户档案或密钥',screenshot:path.join(root,'report-1024.png')};fs.writeFileSync(path.join(ROOT,'test-output','daily-history-'+(process.env.FDE_SMOKE_EXECUTABLE?'portable':'source')+'.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));
  }finally{if(app)await app.close();await new Promise(r=>server.close(r));}
 }

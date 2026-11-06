@@ -1200,13 +1200,14 @@ class Store {
     shadow.dataDir = this.dataDir;
     shadow._persist = () => {};
     shadow._commit = value => clone(value);
-    const oldVersion=dailyHistory.latest(project,date),latestDate=Object.keys(project.dailyHistory||{}).sort().at(-1),historical=!!latestDate&&date<latestDate;
-    if(historical&&oldVersion){const prior=shadow._project(projectId);prior.requirements=clone(oldVersion.requirements);prior.requirementConfirmations=clone(oldVersion.confirmations);}
+    const historical=date<dailyHistory.latestDate(project);
+    const context=historical?dailyHistory.requirementsAt(project,date):project;
+    if(historical){const prior=shadow._project(projectId);prior.requirements=clone(context.requirements);prior.requirementConfirmations=clone(context.requirementConfirmations);}
     shadow.applyRequirementSummary(projectId, { items: input.requirements, confirmations: input.confirmations, method: 'model', threadId: input.threadId });
     shadow.applyDailySummary(projectId, { date, items: input.items, reportText:input.digest.reportText, method: 'model', fingerprint: input.fingerprint, threadId: input.threadId });
     const next = shadow._project(projectId), time = now();
     for(const field of ['requirements','requirementConfirmations']){
-      const previous=new Map((project[field]||[]).map(item=>[item.id,JSON.stringify(item)]));
+      const previous=new Map((context[field]||[]).map(item=>[item.id,JSON.stringify(item)]));
       for(const item of next[field]||[])if(JSON.stringify(item)!==previous.get(item.id))item.organizedDate=date;
     }
     next.materialAnnotations ||= {};

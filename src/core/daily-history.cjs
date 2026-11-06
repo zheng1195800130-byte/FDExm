@@ -5,6 +5,12 @@ const hash=value=>crypto.createHash('sha256').update(JSON.stringify(value)).dige
 const validDate=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&Number.isFinite(Date.parse(value+'T00:00:00Z'))&&new Date(value+'T00:00:00Z').toISOString().slice(0,10)===value;
 const dayOf=value=>value&&Number.isFinite(Date.parse(value))?new Date(Date.parse(value)+8*3600000).toISOString().slice(0,10):'';
 const latest=(project,date)=>project.dailyHistory?.[date]?.at(-1);
+const latestDate=project=>[...Object.keys(project.dailyHistory||{}),project.dailyDesk?.overviewDate||''].sort().at(-1);
+const asOf=(rows,date)=>(rows||[]).filter(row=>{const known=dayOf(row.sourceLastAt)||row.organizedDate||dayOf(row.createdAt);return !known||known<=date;});
+function requirementsAt(project,date){
+  const prior=latest(project,Object.keys(project.dailyHistory||{}).filter(day=>day<=date).sort().at(-1));
+  return {requirements:prior?.requirements??asOf(project.requirements,date),requirementConfirmations:prior?.confirmations??asOf(project.requirementConfirmations,date)};
+}
 function snapshot(project,date,{requirements,confirmations}={}){
   return clone({records:project.records.filter(row=>row.date===date),report:project.reports.find(row=>row.date===date)||null,
     requirements:requirements??project.requirements,confirmations:confirmations??project.requirementConfirmations??[],digest:project.dailyDesk?.days?.[date]?.digest||null});
@@ -12,8 +18,9 @@ function snapshot(project,date,{requirements,confirmations}={}){
 function folder(store,project){return path.join(store.dataDir,'projects',project.id,'历史版本');}
 function append(store,project,date,{reason='保存',value,legacy=false}={}){
   if(!validDate(date))throw new Error('历史日期无效');
-  project.dailyHistory||={};const prior=latest(project,date),lastDay=Object.keys(project.dailyHistory).sort().at(-1);
-  const data=value||snapshot(project,date,date<lastDay&&prior?{requirements:prior.requirements,confirmations:prior.confirmations}:{}),fingerprint=hash(data);
+  project.dailyHistory||={};const prior=latest(project,date),lastDay=latestDate(project);
+  const historical=date<lastDay?requirementsAt(project,date):null;
+  const data=value||snapshot(project,date,historical?{requirements:historical.requirements,confirmations:historical.requirementConfirmations}:{}),fingerprint=hash(data);
   if(prior?.fingerprint===fingerprint)return prior;
   const revision={id:crypto.randomUUID(),number:(prior?.number||0)+1,savedAt:new Date().toISOString(),reason,legacy,fingerprint,...data};
   const file=path.join(folder(store,project),date,revision.id+'.json');
@@ -87,8 +94,7 @@ function migrate(store,project){
   for(const date of dates)if(!latest(project,date)){
     // Old archives do not contain past versions of an updated requirement.
     // Preserve only versions with a known date; never invent an earlier state.
-    const asOf=rows=>(rows||[]).filter(row=>{const known=dayOf(row.sourceLastAt)||row.organizedDate||dayOf(row.createdAt);return !known||known<=date;});
-    append(store,project,date,{reason:'旧档案保留',legacy:true,value:snapshot(project,date,{requirements:asOf(project.requirements),confirmations:asOf(project.requirementConfirmations)})});
+    append(store,project,date,{reason:'旧档案保留',legacy:true,value:snapshot(project,date,{requirements:asOf(project.requirements,date),confirmations:asOf(project.requirementConfirmations,date)})});
   }
 }
-module.exports={append,reconcile,migrate,latest,snapshot,validRevision};
+module.exports={append,reconcile,migrate,latest,latestDate,requirementsAt,snapshot,validRevision};

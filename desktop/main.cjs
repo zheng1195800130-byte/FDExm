@@ -311,7 +311,7 @@ async function dispatch(action, p, sender) {
     case 'summary:run': {
       return dailyDesk.run(p.id,p.date || localDate(new Date()));
     }
-    case 'daily:run': return dailyDesk.run(p.id,p.date || localDate(new Date()),p.mode||'append');
+    case 'daily:run': return dailyDesk.run(p.id,p.date || localDate(new Date()),p.mode||'append',{catchUp:p.catchUp===true,recover:p.recover===true});
     case 'daily:all': return dailyDesk.runAll(p.date || localDate(new Date()));
     case 'daily:raw': return dailyDesk.raw(p.id,p.date || localDate(new Date()));
     case 'daily:report-all': return store.combinedReport(p.date || localDate(new Date()),p.drafts || []);
@@ -455,9 +455,9 @@ else {
     summaryRules = new SummaryRules({ dataDir: DATA });
     summaryService = new SummaryService({ store, reader: codex, summarizer, getModel: () => ({ config: modelSettings.config(), apiKey: modelSettings.key() }), getRules: () => summaryRules.read(), commit, notify: broadcast, delay: process.env.FDE_TEST === '1' ? 100 : 5000 });
     requirementService = new RequirementService({ store, reader: codex, summarizer: requirementSummarizer, getModel: () => ({ config: modelSettings.config(), apiKey: modelSettings.key() }), commit, notify: broadcast, delay: process.env.FDE_TEST === '1' ? 100 : 5000 });
-    dailyDesk = new DailyDesk({store,reader:codex,getModel:()=>({config:modelSettings.config(),apiKey:modelSettings.key()}),getRules:()=>summaryRules.read(),commit,notify:broadcast,prepare:id=>{
+    dailyDesk = new DailyDesk({store,reader:codex,getModel:()=>({config:modelSettings.config(),apiKey:modelSettings.key()}),getRules:()=>summaryRules.read(),commit,notify:broadcast,prepare:(id,{historical})=>{
       if(!project(id).codex.threadId)throw new Error('请先确认本项目的 Codex 会话入口');
-      return scanMaterials(id);
+      if(!historical)return scanMaterials(id);
     }});
     setupIPC(); createWindows();
     // Manual synchronization only. Startup/midnight archive existing local

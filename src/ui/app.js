@@ -107,10 +107,10 @@ function dailyStatusText(p,date){
   const day=p.dailyDesk?.days?.[date]||{},saved=day.organizedAt||summaryFor(p,date)?.updatedAt;
   const last=saved?`上次成功整理 ${requirementTime(saved)}`:'',pending=day.unprocessedCount||0;
   const coverage=day.threadCount?` · ${day.threadCount} 个会话 · ${day.count||0} 轮对话`:'',warning=(day.unfinishedCount?` · ${day.unfinishedCount} 轮对话尚未结束，结束后可再次整理`:'')+(day.captureWarning?` · ${brief(day.captureWarning,160)}`:'');
-  if(dailyBusy||day.status==='running')return `正在整理 ${date} 的新增内容，已有内容保留。`;
+  if(dailyBusy||day.status==='running')return '正在读取对话和保存成果，已有内容保留。';
   if(day.status==='error')return `本次整理未完成：${brief(day.message||'请稍后手动重试',150)}。${last?last+'，显示上次保存内容。':'已有记录保留。'}`;
   if(saved)return `${last}${coverage}${pending?` · 上次收录还有 ${pending} 项待整理`:''}${day.partial?' · 部分原文未完整收录或已缩略':''}${warning}`;
-  return `${date} · ${day.count||0} 轮已收录${day.threadCount?` · ${day.threadCount} 个会话`:''}。点击整理时接续本项目当日对话。${warning}`;
+  return `${date} · ${day.count||0} 轮已收录${day.threadCount?` · ${day.threadCount} 个会话`:''}。追加更新时会检查最近 7 天的漏记。${warning}`;
 }
 function render(){
   renderGlobalActions();
@@ -212,11 +212,34 @@ async function saveRequirementFilter(value,mode=value?'date':'all'){
   catch(error){if(project()?.id===p.id&&input?.isConnected)input.value=previous;throw error;}
   finally{if(input?.isConnected)input.disabled=false;}
 }
-async function organizeDaily(all=false,date=today()){
+async function organizeDaily(all=false,date=today(),recover=false){
   const p=project();if(!p||dailyBusy)return;
   if(!all&&!p.codex?.threadId){await bindCodex();return;}
   dailyBusy=true;resetOriginalConversation();render();
-  try{const result=await request(all?'daily:all':'daily:run',{id:p.id,date,mode:organizeMode});const errors=result.results?.filter(r=>r.error)||[];if(!all&&!result.savedVerified)throw new Error('整理结果尚未通过保存核验，请更新程序或重试。');dailyVersionSelections.delete(dailyVersionKey(p,date));if(!errors.some(r=>r.id===p.id)){recordDate=recordEndDate=reportDate=codexDate=date;}await refresh();const message=all?`已检查 ${result.results.length} 个项目，成果已保存本地`:result.skipped?result.message:result.workCount?`已保存并核验：${result.workCount} 项工作记录${result.reportSaved?'及日报':''}`:result.unfinishedCount?'已保存项目和需求；当天对话还在进行，回复结束后可再次整理':'已保存项目和需求；当天暂无可提炼的工作内容';const pending=result.pending?`，还有 ${result.pending} 项待整理`:'';notify(errors.length?errors.map(r=>`${r.name}：${r.error}`).join('；'):result.archiveWarning||message+pending,!!errors.length||!!result.archiveWarning);}
+  try{
+    const result=await request(all?'daily:all':'daily:run',{id:p.id,date,mode:recover?'append':organizeMode,catchUp:!all&&!recover,recover});
+    const recovered=result.backfill?.results.filter(row=>row.savedVerified&&!row.archiveWarning)||[];
+    if(!all&&!result.savedVerified&&!recovered.length)throw new Error(result.error||'整理结果尚未通过保存核验，请重试。');
+    const errors=(result.results||[]).filter(row=>row.error).map(row=>`${row.name}：${row.error}`);
+    const currentFailed=(result.results||[]).some(row=>row.id===p.id&&row.error);
+    if(result.error)errors.push(`${date} 整理未完成：${result.error}`);
+    for(const row of result.backfill?.results||[]){
+      if(row.error||row.archiveWarning)errors.push(`${row.date} 补整理未完成：${row.error||row.archiveWarning}`);
+      else if(row.pending)errors.push(`${row.date} 仍有 ${row.pending} 项待整理`);
+    }
+    if(result.backfill?.waiting.length)errors.push(`${result.backfill.waiting.join('、')} 还有未完成的对话`);
+    if(result.backfill?.warning)errors.push(result.backfill.warning);
+    if(result.archiveWarning)errors.push(result.archiveWarning);
+    const latestRecovered=recovered.filter(row=>row.workCount||row.reportSaved).at(-1);
+    const visibleDate=!result.workCount&&!result.reportSaved&&latestRecovered?latestRecovered.date:date;
+    for(const day of [date,...recovered.map(row=>row.date)])dailyVersionSelections.delete(dailyVersionKey(p,day));
+    if(!currentFailed&&project()?.id===p.id)recordDate=recordEndDate=reportDate=codexDate=visibleDate;
+    await refresh();
+    const message=all?`已检查 ${result.results.length} 个项目`:result.error?'':result.skipped?result.message:result.workCount?`已保存 ${date} 的 ${result.workCount} 项工作记录${result.reportSaved?'及日报':''}`:result.unfinishedCount?'当天对话还在进行，回复结束后可再次整理':'已保存整理结果，当天暂无可提炼的工作内容';
+    const restored=recovered.length?`已补整理 ${recovered.map(row=>row.date).join('、')}`:'';
+    const pending=result.pending?`还有 ${result.pending} 项待整理`:'';
+    notify([restored,message,pending,...errors].filter(Boolean).join('；'),!!errors.length);
+  }
   finally{dailyBusy=false;render();}
 }
 function historyDates(p){return [...new Set([...(p.records||[]).map(item=>item.date),...(p.reports||[]).map(item=>item.date),...Object.keys(p.dailyHistory||{}),...(p.codex?.dailySummaries||[]).map(item=>item.date),...Object.entries(p.dailyDesk?.days||{}).filter(([,day])=>day.digest?.reportText).map(([date])=>date)])].filter(validDate).sort((a,b)=>b.localeCompare(a));}
@@ -228,6 +251,7 @@ function renderRecords(p){
   `<div class="toolbar records-toolbar"><div class="filters"><label class="record-date-field" for="record-date">开始日期<input type="date" id="record-date" value="${esc(recordDate)}" aria-label="开始日期" ${error?'aria-invalid="true" aria-describedby="record-range-error"':''}></label><span class="record-date-separator" aria-hidden="true">至</span><label class="record-date-field" for="record-end-date">结束日期<input type="date" id="record-end-date" value="${esc(recordEndDate)}" aria-label="结束日期" ${error?'aria-invalid="true" aria-describedby="record-range-error"':''}></label>${historySelect('record-history',historyDates(original),date)}${recordDate||recordEndDate?'<button class="btn small" data-action="clear-record-date">全部日期</button>':''}</div></div>${error?`<p class="record-range-error" id="record-range-error" role="alert">${esc(error)}</p>`:''}`+
   (records.length?[...groups].map(([date,items])=>`<div class="records-day"><h2>${esc(date)}</h2><span>${items.length} 项工作记录</span></div>${items.map(r=>`<article class="record-card"><div class="record-head"><div><div class="item-key">${esc(r.issueKey||'未设置事项编号')}</div><h3>${esc(r.title)}</h3></div><div class="actions">${badge(r.status)}<button class="icon-btn" data-action="edit-record" data-item="${esc(r.id)}" aria-label="编辑 ${esc(r.title)}">${icon('edit',16)}</button></div></div><div class="record-columns"><div>${r.cause?`<div class="record-field"><div class="data-label">原因</div><div class="data-value">${esc(r.cause)}</div></div>`:''}<div class="record-field"><div class="data-label">处理</div><div class="data-value">${esc(r.action||'尚未填写')}</div></div></div><div class="record-field"><div class="data-label">结果</div><div class="data-value">${esc(r.result||'尚未明确')}</div></div></div>${r.attachments?.length?`<div class="attachment-line">附件：${esc(r.attachments.map(sourceText).join('\n'))}</div>`:''}<div class="record-footer"><div class="confirmation ${r.confirmed?'':'unconfirmed'}">${icon(r.confirmed?'check':'clock',13)}${automaticRecord(r)?'自动整理 · 可编辑':r.confirmed?'已核对 · 可用于日报':r.summaryOrigin?'已手动调整 · 待核对':'手工草稿 · 确认后可用于日报'}</div>${r.sourceRef?`<span class="small-text muted record-source">来源：${esc(sourceText(r.sourceRef))}</span>`:''}</div></article>`).join('')}`).join(''):empty('今天的有效工作，从这里留下',recordDate?'所选日期暂无记录。':'记下问题、原因、有效处理和结果。长对话留在 Codex，摘要留在这里。',actionButton('new-record','添加工作记录','plus','','primary'),'records'));
   if(date)$('record-history')?.insertAdjacentHTML('afterend',versionSelect(original,date));
+  if(validDate(date)&&date<today()&&original.codex?.threadId)$('workspace').querySelector('.records-toolbar .filters').insertAdjacentHTML('beforeend',actionButton('recover-record-date',dailyBusy?'整理中…':'补整理这一天','refresh',dailyBusy?'disabled aria-busy="true"':'','small'));
   if(error)$('workspace').querySelector('.empty-state')?.remove();
   if(readonly)for(const button of $('workspace').querySelectorAll('[data-action="edit-record"],[data-action="new-record"]')){button.disabled=true;button.title='正在查看历史版本。';}
 }
@@ -552,6 +576,7 @@ async function handleAction(action,target){
     case 'bind-codex':await bindCodex();break;
     case 'show-codex-date':selectCodexDate(target.dataset.date);await refresh();break;
     case 'daily-current':await organizeDaily(false,today());break;
+    case 'recover-record-date':{const date=recordSingleDate();if(validDate(date)&&date<today())await organizeDaily(false,date,true);break;}
     case 'daily-all':await organizeDaily(true,today());break;
     case 'daily-report-all':{const date=route==='reports'?reportDate:today(),drafts=state.projects.filter(proj=>reportDrafts.has(reportKey(proj,date))||(reportGenerated.get(reportKey(proj,date))?.explicit&&reportGenerated.get(reportKey(proj,date))?.signature===reportSignature(proj,date))).map(proj=>({id:proj.id,text:currentReportText(proj,date)})),value=await request('daily:report-all',{date,drafts});showForm('全部项目日报',value.date,`${value.pendingProjects?.length?`<div class="notice warning">${esc(value.pendingProjects.join('、'))} 还有未整理内容，当前显示已保存成果。</div>`:''}<div class="markdown-body">${renderMarkdown(value.text)}</div>`,async()=>{await request('clipboard:text',{text:value.text});notify('已复制全部项目日报');},{submitLabel:'复制日报'});break;}
     case 'material-folder-copy':await request('material:folder-copy-path',{id,targetId:target.dataset.target});notify('目录路径已复制');break;

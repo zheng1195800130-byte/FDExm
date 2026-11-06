@@ -10,7 +10,7 @@ function fixture(t){
   const home=path.join(root,'codex'),cwd=path.join(root,'development'),source=path.join(root,'source');
   fs.mkdirSync(home);fs.mkdirSync(cwd);fs.mkdirSync(source);
   const store=new Store(path.join(root,'data')),p=store.createProject({name:'连续工作',sourceDir:source,devDir:cwd});store.bindCodexThread(p.id,{threadId:'old-chat'});
-  const calls=[],reader={readThread:input=>codex.readThread({...input,home}),readProjectDay:input=>codex.readProjectDay({...input,home})};
+  const calls=[],reader={readThread:input=>codex.readThread({...input,home}),readProjectDay:input=>codex.readProjectDay({...input,home}),readProjectRange:input=>codex.readProjectRange({...input,home})};
   const service=new DailyDesk({store,reader,now:()=>new Date(`${DATE}T10:00:00Z`),getModel:()=>({config:{enabled:true,provider:'compatible',baseUrl:'http://127.0.0.1:1/v1',model:'fixture'},apiKey:'test-only'}),request:async(_c,_k,messages)=>{
     const input=JSON.parse(messages[1].content);calls.push(input);const sourceIds=input.sources.map(s=>s.id);
     return {overview:{scene:'核对账单',requirements:'接续处理',progress:'完成后续处理',nextAction:'等待验证',blocker:''},items:[{issueKey:'continuous-work',title:'账单核对',cause:'规则调整',action:'接续修改',result:'完成后续处理',status:'待验证',sourceIds}],requirements:[],confirmations:[],reportText:'接续完成账单核对，待验证。',reportIssueKeys:['continuous-work']};
@@ -23,6 +23,44 @@ function fixture(t){
   };
   return {root,home,cwd,store,p,service,reader,calls,work,write,current:()=>store.getState().projects[0]};
 }
+test('追加整理跨过漏点的日期，按上海时间分别保存，重开后重复点击不再发送已处理证据',async t=>{
+  const f=fixture(t),id=f.p.id;
+  f.write('old-chat',[...f.work('outside','超过自动范围',1,'2026-10-05'),...f.work('old','漏整的一天',1,'2026-10-08'),...f.work('late','上海午夜前',15,'2026-10-10')],{archived:true});
+  f.write('new-chat',[...f.work('after-midnight','上海午夜后',16,'2026-10-10'),...f.work('today','当天工作')]);
+  f.write('other',f.work('unrelated','其他项目',1,'2026-10-11'),{directory:f.cwd+'-other'});
+  const result=await f.service.run(id,DATE,'append',{catchUp:true});
+  assert.deepEqual(f.calls.map(input=>[input.date,input.sources.map(source=>source.turnId)]),[
+    ['2026-10-08',['old']],['2026-10-10',['late']],['2026-10-11',['new-chat:after-midnight']],[DATE,['new-chat:today']],
+  ]);
+  assert.deepEqual(result.backfill.results.map(row=>row.date),['2026-10-08','2026-10-10','2026-10-11']);
+  assert.ok(result.backfill.results.every(row=>row.savedVerified&&row.reportSaved));
+  const reopened=new Store(f.store.dataDir).getState().projects[0];
+  for(const {date} of f.calls){assert.equal(reopened.dailyHistory[date].length,1);assert.equal(reopened.dailyHistory[date][0].records[0].date,date);assert.equal(reopened.dailyHistory[date][0].report.date,date);}
+  assert.equal(reopened.dailyDesk.overviewDate,DATE);
+  const repeat=await f.service.run(id,DATE,'append',{catchUp:true});assert.deepEqual(repeat.backfill.results,[]);assert.equal(f.calls.length,4);
+  await f.service.run(id,'2026-10-05','append',{recover:true});assert.equal(f.calls.at(-1).date,'2026-10-05');assert.equal(f.current().dailyDesk.overviewDate,DATE);
+});
+test('历史补整理不混入当期资料或较新的需求，失败日期可重试，人工日报和较新版本保留',async t=>{
+  const f=fixture(t),id=f.p.id,missed='2026-10-11';let fail=true;
+  f.write('old-chat',f.work('today','当天工作'));
+  const reply=f.service.request;
+  f.service.request=async(c,k,m)=>{
+    const input=JSON.parse(m[1].content),past=input.date===missed;
+    if(past){assert.equal(input.previousOverview.progress,undefined);assert.ok(!input.requirements.some(row=>row.title==='较新的需求'));assert.ok(input.sources.every(row=>row.id.startsWith('turn:')));if(fail)throw Error('历史日模拟失败');}
+    const output=await reply(c,k,m);output.requirements=[{requirementKey:'same',title:past?'当日原需求':'较新的需求',sourceIds:[input.sources[0].id]}];return output;
+  };
+  await f.service.run(id,DATE);const current=JSON.stringify(f.current().dailyHistory[DATE]);
+  f.write('old-chat',[...f.work('missed','遗漏工作',1,missed),...f.work('today','当天工作')]);
+  f.store.saveReport(id,missed,'人工日报保留');
+  fs.writeFileSync(path.join(f.p.sourceDir,'新资料.md'),'用于后续需求整理的新资料');await f.store.scanProject(id);
+  const first=await f.service.run(id,DATE,'append',{catchUp:true});
+  assert.match(first.backfill.results[0].error,/模拟失败/);assert.equal(first.savedVerified,true);
+  // The current-day run may process new materials. Compare against that saved version before retrying history.
+  const afterToday=JSON.stringify(f.current().dailyHistory[DATE]);assert.ok(afterToday.includes(JSON.parse(current)[0].id));
+  fail=false;const second=await f.service.run(id,DATE,'append',{catchUp:true});assert.ok(second.backfill.results[0].savedVerified);
+  const saved=f.current();assert.equal(JSON.stringify(saved.dailyHistory[DATE]),afterToday);assert.equal(saved.requirements[0].title,'较新的需求');
+  assert.equal(saved.dailyHistory[missed].at(-1).requirements[0].title,'当日原需求');assert.equal(saved.reports.find(row=>row.date===missed).text,'人工日报保留');
+});
 test('仅归档目录存在时仍能找到原会话，缓存后的归档移动也可继续读取',async t=>{
   const f=fixture(t),rows=f.work('morning','上午核对');const original=f.write('old-chat',rows);
   assert.equal((await codex.readThread({home:f.home,cwd:f.cwd,threadId:'old-chat',date:DATE})).turns.length,1);

@@ -305,16 +305,16 @@ function rememberRead(file, stamp, result) {
   while (readCache.size > 8) readCache.delete(readCache.keys().next().value);
 }
 
-async function readThread({ threadId, cwd, home, history = false, date } = {}) {
+async function readThread({ threadId, cwd, home, history = false, date, from = date, to = date } = {}) {
   if (typeof threadId !== 'string' || !threadId || threadId.length > 200) throw new Error('请主动关联一个 Codex 会话。');
-  if (date !== undefined && (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || localDate(`${date}T04:00:00Z`) !== date)) throw new Error('工作日期格式无效。');
-  const mode = date ? 'date' : history ? 'history' : 'recent';
+  if (from !== undefined || to !== undefined) validateWindow(from, to);
+  const mode = date ? 'date' : from ? 'range' : history ? 'history' : 'recent';
   const known = await knownThread({ threadId, cwd, home });
   const thread = known?.thread || (await listThreads({ cwd, home })).find(item => item.id === threadId);
   if (!thread) throw new Error('没有找到匹配项目的 Codex 会话，或该会话已不可读取。');
   const currentStat = known?.stat || await fs.stat(thread.path);
   const stamp = `${thread.id}:${currentStat.size}:${currentStat.mtimeMs}`;
-  const cacheKey = `${thread.path}\0${mode}:${date || ''}`;
+  const cacheKey = `${thread.path}\0${mode}:${from || ''}:${to || ''}`;
   const previous = readCache.get(cacheKey);
   if (previous?.stamp === stamp) {
     readCache.delete(cacheKey);
@@ -334,7 +334,8 @@ async function readThread({ threadId, cwd, home, history = false, date } = {}) {
     discoveredDates.add(value);
   }
   function retain() {
-    if (active.retained || (date && localDate(active.timestamp) !== date)) return;
+    const day = from && localDate(active.timestamp);
+    if (active.retained || (from && (day < from || day > to))) return;
     active.retained = true;
     turns.push(active);
     if (turns.length > MAX_TURNS) { turns.shift(); dropped = true; }
@@ -412,17 +413,21 @@ async function readThread({ threadId, cwd, home, history = false, date } = {}) {
   return result;
 }
 
-// Called only by an explicit organization action. Metadata must match the
-// exact cwd; parent/sibling directories and spawned agents are never included.
-async function readProjectDay({ threadId, cwd, home, date } = {}) {
+function validateWindow(from, to) {
+  const valid = date => typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) && localDate(`${date}T04:00:00Z`) === date;
+  if (!valid(from) || !valid(to) || from > to) throw new Error('工作日期格式无效。');
+}
+
+// Metadata must match the exact cwd. Scan each eligible session once per window.
+async function readProjectRange({ threadId, cwd, home, from, to }) {
+  validateWindow(from, to);
   if (typeof threadId !== 'string' || !threadId || threadId.length > 200 || !normalizeCwd(cwd)) throw new Error('请先关联项目会话并指定工作日期。');
-  if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || localDate(`${date}T04:00:00Z`) !== date) throw new Error('工作日期格式无效。');
   const candidates = await listThreads({ cwd, home });
   if (!candidates.length) throw new Error('没有找到匹配项目的 Codex 会话（含已归档会话），请核对开发目录。已有收录仍保留。');
   // An unchanged rollout older than the requested day cannot contain new
   // work from that day. Keep the bound entry even when it is old, and avoid
   // scanning unrelated earlier months or attributing their omissions to today.
-  const ordered = candidates.filter(thread => thread.id === threadId || localDate(thread.updatedAt) >= date)
+  const ordered = candidates.filter(thread => thread.id === threadId || localDate(thread.updatedAt) >= from)
     .sort((a, b) => Number(b.id === threadId) - Number(a.id === threadId) || b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
   const selected = ordered.slice(0, 60), threads = [], turns = [], warnings = [], seen = new Set();
   let partial = !!candidates.truncated || ordered.length > selected.length;
@@ -430,12 +435,12 @@ async function readProjectDay({ threadId, cwd, home, date } = {}) {
   if (!candidates.some(thread => thread.id === threadId)) warnings.push('原关联会话不可读取，已接续同一开发目录的其他会话，并保留已有收录');
   for (const thread of selected) {
     let result;
-    try { result = await module.exports.readThread({ threadId: thread.id, cwd, home, history: true, date }); }
+    try { result = await module.exports.readThread({ threadId: thread.id, cwd, home, history: true, ...(from === to ? {date:from} : {from,to}) }); }
     catch { partial = true; warnings.push(`会话 ${thread.id} 未能读取，已有收录保留`); continue; }
     threads.push({ ...result.thread, archived: thread.archived });
     partial ||= !!(result.workTruncated ?? result.truncated);
     if (result.workTruncated ?? result.truncated) warnings.push(`会话 ${thread.id} 部分原文未读取`);
-    for (const turn of result.turns.filter(turn => turn.date === date)) {
+    for (const turn of result.turns.filter(turn => turn.date >= from && turn.date <= to)) {
       // Forks can replay a parent's completed turns. Only identical evidence
       // with the same original turn and time is a duplicate, never equal text alone.
       const key = JSON.stringify([turn.id, turn.timestamp, turn.userText, turn.assistantText, turn.attachments]);
@@ -447,6 +452,10 @@ async function readProjectDay({ threadId, cwd, home, date } = {}) {
   if (!threads.length) throw new Error('项目会话暂无法读取，已有收录和整理结果仍保留，请稍后重试。');
   turns.sort((a, b) => a.timestamp.localeCompare(b.timestamp) || a.id.localeCompare(b.id));
   return { turns, threads, truncated: partial, workTruncated: partial, warning: warnings.join('；') };
+}
+
+function readProjectDay({ date, ...scope } = {}) {
+  return readProjectRange({...scope, from:date, to:date});
 }
 
 function fieldsFrom(text) {
@@ -501,4 +510,4 @@ function extractDrafts(turns = []) {
   return { requirements, records };
 }
 
-module.exports = { listThreads, readThread, readProjectDay, extractDrafts };
+module.exports = { listThreads, readThread, readProjectDay, readProjectRange, extractDrafts };
